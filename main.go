@@ -86,10 +86,23 @@ func main() {
 
 	// Fail fast if required external binaries are missing
 	if _, err := exec.LookPath("ffprobe"); err != nil {
-		fatal("ffprobe not found in $PATH — install ffmpeg (brew install ffmpeg)")
+		fatal("ffprobe not found in $PATH — install ffmpeg")
 	}
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		fatal("ffmpeg not found in $PATH — install ffmpeg (brew install ffmpeg)")
+		fatal("ffmpeg not found in $PATH — install ffmpeg")
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		// On Linux we require libfdk_aac encoder; fail fast instead of per-file errors
+		out, err := exec.Command("ffmpeg", "-encoders").Output()
+		if err != nil || !strings.Contains(string(out), "libfdk_aac") {
+			fatal("ffmpeg libfdk_aac encoder not available — install ffmpeg with --enable-libfdk-aac (e.g. ffmpeg-full)")
+		}
+	case "darwin":
+		if _, err := os.Stat("/usr/bin/afconvert"); err != nil {
+			fatal("afconvert not found at /usr/bin/afconvert — install Xcode Command Line Tools")
+		}
 	}
 
 	// Gather all files first
@@ -254,56 +267,6 @@ func processFile(src, dst string) error {
 		// skip unknown types
 		return nil
 	}
-}
-
-// convertToAAC uses afconvert to encode a lossless file to high-quality AAC
-func convertToAAC(src, dst string) error {
-	dst = strings.TrimSuffix(dst, filepath.Ext(dst)) + ".m4a"
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	cmd := exec.Command(
-		"/usr/bin/afconvert",
-		"-f", "m4af",
-		"-d", "aac",
-		"-b", "256000",
-		src,
-		dst,
-	)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
-		_ = os.Remove(dst)
-		return err
-	}
-
-	// Copy metadata from source to encoded file using ffmpeg
-	tmp := dst + ".tmp.m4a"
-	metaCmd := exec.Command(
-		"ffmpeg",
-		"-y",
-		"-i", src,
-		"-i", dst,
-		"-map", "1:a",
-		"-map_metadata", "0",
-		"-c", "copy",
-		tmp,
-	)
-
-	if err := metaCmd.Run(); err != nil {
-		_ = os.Remove(dst)
-		_ = os.Remove(tmp)
-		return err
-	}
-
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		_ = os.Remove(dst)
-		return err
-	}
-
-	return nil
 }
 
 // isALAC uses ffprobe to determine if a .m4a file is ALAC
