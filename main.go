@@ -1,8 +1,7 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -82,6 +82,14 @@ func main() {
 	// Validate workers flag
 	if *workers < 0 {
 		fatal("workers must be >= 0")
+	}
+
+	// Fail fast if required external binaries are missing
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		fatal("ffprobe not found in $PATH — install ffmpeg (brew install ffmpeg)")
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		fatal("ffmpeg not found in $PATH — install ffmpeg (brew install ffmpeg)")
 	}
 
 	// Gather all files first
@@ -298,21 +306,28 @@ func convertToAAC(src, dst string) error {
 	return nil
 }
 
-// isALAC uses afinfo to determine if a .m4a file is ALAC
+// isALAC uses ffprobe to determine if a .m4a file is ALAC
 func isALAC(path string) (bool, error) {
-	cmd := exec.Command("/usr/bin/afinfo", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path)
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, fmt.Errorf("ffprobe timeout for %q", path)
+	}
 	if err != nil {
 		return false, err
 	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	for scanner.Scan() {
-		if strings.Contains(strings.ToLower(scanner.Text()), "alac") {
-			return true, nil
-		}
+	codec := strings.TrimSpace(string(out))
+	if codec == "" {
+		return false, nil
 	}
-	return false, nil
+	return strings.EqualFold(codec, "alac"), nil
 }
 
 // copyFile copies a file from src to dst
