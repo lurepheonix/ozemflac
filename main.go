@@ -64,7 +64,34 @@ func (p Preset) Ext() string {
 
 var activePreset Preset
 
+type candidate struct {
+	src     string
+	rel     string
+	dirRel  string
+	isCover bool
+	isMusic bool
+	preset  Preset
+}
+
+type scanResult struct {
+	candidates           []candidate
+	ignoredFiles         []candidate
+	dirPatterns          map[string][]gitignore.Pattern
+	dirPresets           map[string]Preset
+	dirHasPreset         map[string]bool
+	allDirs              []string
+	dirHasMusicCandidate map[string]bool
+	subtreeHasMusic      map[string]bool
+	ignoredCount         map[string]int
+	totalScanned         int
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "tree" {
+		runTree(os.Args[2:])
+		return
+	}
+
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	flag.Parse()
@@ -79,7 +106,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] <source_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
@@ -126,219 +153,36 @@ func main() {
 	}
 
 	// Gather all files with per-folder ignore/preset (calculate phase)
-	dirPatterns := make(map[string][]gitignore.Pattern)
-	dirPresets := make(map[string]Preset)
-	dirHasPreset := make(map[string]bool)
-
-	type candidate struct {
-		src      string
-		rel      string
-		dirRel   string
-		isCover  bool
-		isMusic  bool
-		preset   Preset
-	}
-	var candidates []candidate
-	dirHasMusicCandidate := make(map[string]bool)
-	var allDirs []string
-	seenDirs := make(map[string]bool)
-
-	err := filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() {
-			relDir, err := filepath.Rel(srcRoot, path)
-			if err != nil {
-				return err
-			}
-			if relDir == "." {
-				relDir = "."
-			} else {
-				relDir = filepath.ToSlash(relDir)
-			}
-			if !seenDirs[relDir] {
-				seenDirs[relDir] = true
-				allDirs = append(allDirs, relDir)
-			}
-			// Load .ozemignore
-			ignorePath := filepath.Join(path, ".ozemignore")
-			if data, err := os.ReadFile(ignorePath); err == nil {
-				lines := strings.Split(string(data), "\n")
-				var domain []string
-				if relDir != "." {
-					domain = strings.Split(relDir, "/")
-				}
-				var ps []gitignore.Pattern
-				for _, s := range lines {
-					if strings.HasPrefix(s, "#") || len(strings.TrimSpace(s)) == 0 {
-						continue
-					}
-					ps = append(ps, gitignore.ParsePattern(s, domain))
-				}
-				if len(ps) > 0 {
-					dirPatterns[relDir] = ps
-				}
-			}
-			// Load .ozemrc
-			rcPath := filepath.Join(path, ".ozemrc")
-			if data, err := os.ReadFile(rcPath); err == nil {
-				preset, ok, perr := parseOzemrc(string(data), path)
-				if perr != nil {
-					return perr
-				}
-				if ok {
-					dirPresets[relDir] = preset
-					dirHasPreset[relDir] = true
-				}
-			}
-			return nil
-		}
-
-		// File handling
-
-		// Ignore macOS metadata files (extra safety, before gitignore)
-		if d.Name() == ".DS_Store" {
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), "._") {
-			return nil
-		}
-		// Never include config files themselves
-		if d.Name() == ".ozemignore" || d.Name() == ".ozemrc" {
-			return nil
-		}
-
-		rel, err := filepath.Rel(srcRoot, path)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		dirRel := filepath.ToSlash(filepath.Dir(rel))
-		if dirRel == "." && filepath.Dir(rel) == "." {
-			dirRel = "."
-		}
-		// Also handle files directly under srcRoot: Dir returns "." already
-		if dirRel == "" {
-			dirRel = "."
-		}
-
-		// Ensure dir entry exists in seen
-		if !seenDirs[dirRel] {
-			seenDirs[dirRel] = true
-			allDirs = append(allDirs, dirRel)
-		}
-
-		// Stacked gitignore check: file is ignored if any ancestor ignore matches
-		if isIgnored(relSlash, dirRel, dirPatterns) {
-			return nil
-		}
-
-		ext := strings.ToLower(filepath.Ext(d.Name()))
-		lcName := strings.ToLower(d.Name())
-
-		isCover := coverFiles[lcName]
-		isMusic := false
-		if losslessExt[ext] || lossyExt[ext] || ext == ".m4a" {
-			// .m4a counts as music candidate (will resolve ALAC later, but still music for dir pruning)
-			isMusic = true
-		}
-		if !isCover && !isMusic {
-			// Unknown type -> skip (same as processFile default)
-			return nil
-		}
-
-		// Effective preset = nearest ancestor with .ozemrc, else activePreset
-		effPreset := effectivePresetFor(dirRel, dirPresets, dirHasPreset, activePreset)
-
-		candidates = append(candidates, candidate{
-			src:     path,
-			rel:     relSlash,
-			dirRel:  dirRel,
-			isCover: isCover,
-			isMusic: isMusic,
-			preset:  effPreset,
-		})
-		if isMusic {
-			dirHasMusicCandidate[dirRel] = true
-		}
-
-		return nil
-	})
+	sr, err := scanSource(srcRoot, activePreset, nil)
 	if err != nil {
 		fatal(err.Error())
 	}
-
-	// Compute subtreeHasMusic: for each dir, true if itself or any descendant has music candidate
-	subtreeHasMusic := make(map[string]bool)
-	for dir := range dirHasMusicCandidate {
-		subtreeHasMusic[dir] = true
-		// Mark ancestors
-		for _, anc := range ancestorsOf(dir) {
-			subtreeHasMusic[anc] = true
-		}
-	}
-	// Also ensure allDirs are considered for subtree check via children
-	// Already handled by ancestors propagation above. Need also handle case where child has music but parent not directly marked: ancestors loop covers.
 
 	// Now schedule jobs: cover only if subtree has music
 	var jobs []Job
 	needAAC := false
 	needMP3 := false
-	for _, c := range candidates {
+	for _, c := range sr.candidates {
 		if c.isCover {
-			if !subtreeHasMusic[c.dirRel] {
+			if !sr.subtreeHasMusic[c.dirRel] {
 				continue
 			}
-			// Also check if cover's directory subtree has music (already), else skip
 			jobs = append(jobs, Job{Src: c.src, Dst: filepath.Join(dstRoot, filepath.FromSlash(c.rel)), Preset: c.preset})
 			continue
 		}
 		if c.isMusic {
-			// Need to track needed encoders based on effective preset for this music file
 			if c.preset == PresetMP3 {
 				needMP3 = true
 			} else {
 				needAAC = true
 			}
-			// For .m4a files that are not ALAC, they will be copied, not converted, but still count as music already
-			// Encoder need already tracked; copy doesn't need encoder, but still need to know preset for potential ALAC conversion.
-			// We'll keep need flags as above for all lossless candidates; lossy copies don't strictly need encoder but keep simple.
 			jobs = append(jobs, Job{Src: c.src, Dst: filepath.Join(dstRoot, filepath.FromSlash(c.rel)), Preset: c.preset})
 		}
 	}
 
-	// Also need to consider default preset if no candidates but activePreset defines need? Actually if no music candidates, no encoder needed.
-	// But for safety, if candidates empty, still check based on activePreset? Not needed because no jobs.
-	// However if we probe encoders before knowing jobs, we would probe both. Now we probe only needed.
-	// Ensure at least if there is any music that could be converted (lossless or ALAC) we probe correct encoder.
-	// For simplicity, if no candidates, skip probe.
 	if len(jobs) > 0 {
-		// Determine actual needed encoders more precisely: check if any job is actually convertible (lossless or ALAC)
-		// But to keep fail-fast simple, probe based on presets present in jobs
-		hasAACPreset := false
-		hasMP3Preset := false
-		for _, j := range jobs {
-			ext := strings.ToLower(filepath.Ext(j.Src))
-			lcName := strings.ToLower(filepath.Base(j.Src))
-			if coverFiles[lcName] {
-				continue
-			}
-			// Only need encoder if this file would be converted (lossless or ALAC)
-			// For now, if job preset is AAC/MP3 and file is lossless ext or m4a ALAC, need encoder
-			// To avoid extra ffprobe here, just assume any music job with that preset needs encoder
-			// Simpler: use needAAC/needMP3 from above which already tracks per candidate preset
-			_ = ext
-		}
-		// Use need flags computed during candidate loop (already per preset)
-		hasAACPreset = needAAC
-		hasMP3Preset = needMP3
-
-		// Fallback: if jobs contain only lossy copies (e.g., only mp3 files copied), need flags may be true but actually no conversion needed.
-		// To avoid false probe failures, we can refine: only probe if there exists at least one lossless or ALAC job.
-		// For now, probe only if hasAAC/hasMP3 and there is at least one convertible file type; we can keep as is for strictness.
-		// Perform probes
+		hasAACPreset := needAAC
+		hasMP3Preset := needMP3
 		if hasAACPreset {
 			switch runtime.GOOS {
 			case "linux":
@@ -454,6 +298,187 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// scanSource walks srcRoot and collects candidates with stacked ignore/preset handling
+// onProgress is called periodically with number of files scanned (or nil for no progress)
+func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanResult, error) {
+	dirPatterns := make(map[string][]gitignore.Pattern)
+	dirPresets := make(map[string]Preset)
+	dirHasPreset := make(map[string]bool)
+	var candidates []candidate
+	var ignoredFiles []candidate
+	dirHasMusicCandidate := make(map[string]bool)
+	ignoredCount := make(map[string]int)
+	var allDirs []string
+	seenDirs := make(map[string]bool)
+	scannedFiles := 0
+
+	err := filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			relDir, err := filepath.Rel(srcRoot, path)
+			if err != nil {
+				return err
+			}
+			if relDir == "." {
+				relDir = "."
+			} else {
+				relDir = filepath.ToSlash(relDir)
+			}
+			if !seenDirs[relDir] {
+				seenDirs[relDir] = true
+				allDirs = append(allDirs, relDir)
+			}
+			// Load .ozemignore
+			ignorePath := filepath.Join(path, ".ozemignore")
+			if data, err := os.ReadFile(ignorePath); err == nil {
+				lines := strings.Split(string(data), "\n")
+				var domain []string
+				if relDir != "." {
+					domain = strings.Split(relDir, "/")
+				}
+				var ps []gitignore.Pattern
+				for _, s := range lines {
+					if strings.HasPrefix(s, "#") || len(strings.TrimSpace(s)) == 0 {
+						continue
+					}
+					ps = append(ps, gitignore.ParsePattern(s, domain))
+				}
+				if len(ps) > 0 {
+					dirPatterns[relDir] = ps
+				}
+			}
+			// Load .ozemrc
+			rcPath := filepath.Join(path, ".ozemrc")
+			if data, err := os.ReadFile(rcPath); err == nil {
+				preset, ok, perr := parseOzemrc(string(data), path)
+				if perr != nil {
+					return perr
+				}
+				if ok {
+					dirPresets[relDir] = preset
+					dirHasPreset[relDir] = true
+				}
+			}
+			return nil
+		}
+
+		// File handling
+		scannedFiles++
+		if onProgress != nil && scannedFiles%20 == 0 {
+			onProgress(scannedFiles)
+		}
+
+		// Ignore macOS metadata files (extra safety, before gitignore)
+		if d.Name() == ".DS_Store" {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), "._") {
+			return nil
+		}
+		// Never include config files themselves
+		if d.Name() == ".ozemignore" || d.Name() == ".ozemrc" {
+			return nil
+		}
+
+		rel, err := filepath.Rel(srcRoot, path)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(rel)
+		dirRel := filepath.ToSlash(filepath.Dir(rel))
+		if dirRel == "." && filepath.Dir(rel) == "." {
+			dirRel = "."
+		}
+		if dirRel == "" {
+			dirRel = "."
+		}
+
+		if !seenDirs[dirRel] {
+			seenDirs[dirRel] = true
+			allDirs = append(allDirs, dirRel)
+		}
+
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		lcName := strings.ToLower(d.Name())
+
+		isCover := coverFiles[lcName]
+		isMusic := false
+		if losslessExt[ext] || lossyExt[ext] || ext == ".m4a" {
+			isMusic = true
+		}
+		isKnown := isCover || isMusic
+
+		// Stacked gitignore check (after classification, so we can record ignored files)
+		if isIgnored(relSlash, dirRel, dirPatterns) {
+			ignoredCount[dirRel]++
+			if isKnown {
+				// Record for tree --all display
+				effPreset := effectivePresetFor(dirRel, dirPresets, dirHasPreset, defPreset)
+				ignoredFiles = append(ignoredFiles, candidate{
+					src:     path,
+					rel:     relSlash,
+					dirRel:  dirRel,
+					isCover: isCover,
+					isMusic: isMusic,
+					preset:  effPreset,
+				})
+			}
+			return nil
+		}
+
+		if !isKnown {
+			return nil
+		}
+
+		effPreset := effectivePresetFor(dirRel, dirPresets, dirHasPreset, defPreset)
+
+		candidates = append(candidates, candidate{
+			src:     path,
+			rel:     relSlash,
+			dirRel:  dirRel,
+			isCover: isCover,
+			isMusic: isMusic,
+			preset:  effPreset,
+		})
+		if isMusic {
+			dirHasMusicCandidate[dirRel] = true
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if onProgress != nil {
+		onProgress(scannedFiles)
+	}
+
+	// Compute subtreeHasMusic
+	subtreeHasMusic := make(map[string]bool)
+	for dir := range dirHasMusicCandidate {
+		subtreeHasMusic[dir] = true
+		for _, anc := range ancestorsOf(dir) {
+			subtreeHasMusic[anc] = true
+		}
+	}
+
+	return &scanResult{
+		candidates:           candidates,
+		ignoredFiles:         ignoredFiles,
+		dirPatterns:          dirPatterns,
+		dirPresets:           dirPresets,
+		dirHasPreset:         dirHasPreset,
+		allDirs:              allDirs,
+		dirHasMusicCandidate: dirHasMusicCandidate,
+		subtreeHasMusic:      subtreeHasMusic,
+		ignoredCount:         ignoredCount,
+		totalScanned:         len(candidates) + len(ignoredFiles),
+	}, nil
 }
 
 // processFile decides how to handle each file
