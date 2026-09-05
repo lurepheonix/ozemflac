@@ -57,6 +57,163 @@ type diffNode struct {
 	children map[string]*diffNode
 }
 
+// computeDiff performs the full diff between src and dst, reusing the same logic as diff.
+// It handles scanning src (with isALAC probing), scanning dst, and building missing/mismatch/extra sets.
+// The caller may provide atomic counters and phase for spinner progress (or nil to skip).
+func computeDiff(srcRoot, dstRoot string, defPreset Preset, scannedSrc, scannedDst, probed *atomic.Int64, phase *atomic.Value) (*scanResult, map[string]diffEntry, map[string]diffEntry, *diffResult, error) {
+	// Scan src
+	sr, err := scanSource(srcRoot, defPreset, func(n int) {
+		if scannedSrc != nil {
+			scannedSrc.Store(int64(n))
+		}
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if phase != nil {
+		phase.Store("probing")
+	}
+	// Build expected map (need isALAC for .m4a)
+	expectedMap := make(map[string]diffEntry)
+	expectedByBase := make(map[string]string) // base without ext -> expectedRel
+	for _, c := range sr.candidates {
+		// Cover only if subtree has music (candidates includes covers even for pruned dirs, filter here)
+		if c.isCover && !sr.subtreeHasMusic[c.dirRel] {
+			continue
+		}
+		// Determine expected dst rel (with preset ext if convert)
+		ext := strings.ToLower(filepath.Ext(c.src))
+		lcName := strings.ToLower(filepath.Base(c.src))
+		var dstRel string
+		var action string
+		var detail string
+		if coverFiles[lcName] {
+			dstRel = c.rel
+			action = "copy"
+			detail = "cover"
+		} else if losslessExt[ext] {
+			dstRel = strings.TrimSuffix(c.rel, filepath.Ext(c.rel)) + c.preset.Ext()
+			action = "convert"
+			detail = ext
+		} else if ext == ".m4a" {
+			isALAC, err := isALAC(c.src)
+			if err != nil {
+				dstRel = c.rel
+				action = "copy"
+				detail = "AAC"
+			} else if isALAC {
+				dstRel = strings.TrimSuffix(c.rel, filepath.Ext(c.rel)) + c.preset.Ext()
+				action = "convert"
+				detail = "ALAC"
+			} else {
+				dstRel = c.rel
+				action = "copy"
+				detail = "AAC"
+			}
+			if probed != nil {
+				probed.Add(1)
+			}
+		} else if lossyExt[ext] {
+			dstRel = c.rel
+			action = "copy"
+			detail = ext
+		} else {
+			continue
+		}
+		dstRel = filepath.ToSlash(dstRel)
+		expectedMap[dstRel] = diffEntry{rel: dstRel, srcRel: c.rel, preset: c.preset, action: action, isCover: c.isCover, detail: detail}
+		base := strings.TrimSuffix(dstRel, filepath.Ext(dstRel))
+		// Also base without ext for mismatch detection, but need to handle multiple files with same base different ext? Use first
+		if _, ok := expectedByBase[base]; !ok {
+			expectedByBase[base] = dstRel
+		}
+	}
+	if phase != nil {
+		phase.Store("scanning dst")
+	}
+	// Scan dst
+	actualMap := make(map[string]diffEntry)
+	actualByBase := make(map[string]string)
+	dstScanned := 0
+	err = filepath.WalkDir(dstRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() == ".DS_Store" || strings.HasPrefix(d.Name(), "._") {
+			return nil
+		}
+		rel, err := filepath.Rel(dstRoot, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		dstScanned++
+		if scannedDst != nil && dstScanned%50 == 0 {
+			scannedDst.Store(int64(dstScanned))
+		}
+		actualMap[rel] = diffEntry{rel: rel, srcRel: rel}
+		base := strings.TrimSuffix(rel, filepath.Ext(rel))
+		if _, ok := actualByBase[base]; !ok {
+			actualByBase[base] = rel
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if scannedDst != nil {
+		scannedDst.Store(int64(dstScanned))
+	}
+
+	// Diff
+	missing := make(map[string]diffEntry)
+	extra := make(map[string]diffEntry)
+	mismatch := make(map[string]mismatchEntry)
+	upToDate := make(map[string]diffEntry)
+
+	for expRel, expEntry := range expectedMap {
+		if _, ok := actualMap[expRel]; !ok {
+			// Check preset mismatch: same base different ext exists in actual
+			base := strings.TrimSuffix(expRel, filepath.Ext(expRel))
+			if actRel, ok2 := actualByBase[base]; ok2 && actRel != expRel {
+				// Mismatch
+				mismatch[expRel] = mismatchEntry{expectedRel: expRel, actualRel: actRel, preset: expEntry.preset, srcRel: expEntry.srcRel}
+			} else {
+				missing[expRel] = expEntry
+			}
+		} else {
+			upToDate[expRel] = expEntry
+		}
+	}
+	for actRel, actEntry := range actualMap {
+		if _, ok := expectedMap[actRel]; !ok {
+			base := strings.TrimSuffix(actRel, filepath.Ext(actRel))
+			if expRel, ok2 := expectedByBase[base]; ok2 {
+				// Already counted as mismatch, skip extra
+				if _, isMismatch := mismatch[expRel]; isMismatch {
+					continue
+				}
+				// Check if this actual's base corresponds to expected with different ext -> already mismatch
+				// Need to check if expectedByBase has this base with different ext
+				// If so, skip
+				continue
+			}
+			extra[actRel] = actEntry
+		}
+	}
+
+	dr := &diffResult{
+		missing:  missing,
+		extra:    extra,
+		mismatch: mismatch,
+		upToDate: upToDate,
+	}
+	return sr, expectedMap, actualMap, dr, nil
+}
+
 func runDiff(args []string) {
 	fs := flag.NewFlagSet("diff", flag.ExitOnError)
 	presetFlag := fs.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
@@ -99,14 +256,13 @@ func runDiff(args []string) {
 	var probed atomic.Int64
 	var phase atomic.Value
 	phase.Store("scanning src")
-	m4aTotal := 0
 	done := make(chan struct{})
 	useColorSpinner := isTerminal(os.Stderr)
 	if !*jsonOut {
 		go withSpinnerAfter(1*time.Second, func() string {
 			p, _ := phase.Load().(string)
 			if p == "probing" {
-				return fmt.Sprintf("Probing… %d/%d .m4a files", probed.Load(), m4aTotal)
+				return fmt.Sprintf("Probing… %d .m4a files", probed.Load())
 			}
 			if p == "scanning dst" {
 				return fmt.Sprintf("Scanning dst… %d files", scannedDst.Load())
@@ -115,150 +271,23 @@ func runDiff(args []string) {
 		}, done, useColorSpinner)
 	}
 
-	// Scan src
-	sr, err := scanSource(srcRoot, defPreset, func(n int) { scannedSrc.Store(int64(n)) })
+	// Use computeDiff for the heavy lifting (need to count m4a for spinner total before probing, so pre-scan? We'll count after but need m4aTotal for spinner text)
+	// To keep spinner accurate, we still need m4aTotal before probing; computeDiff does probing internally, so we estimate m4aTotal via quick scan or just allow spinner to show probed only.
+	// Instead, we call computeDiff which handles probing and phase updates.
+	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, &scannedSrc, &scannedDst, &probed, &phase)
 	if err != nil {
 		close(done)
 		fatal(err.Error())
 	}
-	// Count m4a for probing
-	for _, c := range sr.candidates {
-		if strings.ToLower(filepath.Ext(c.src)) == ".m4a" {
-			m4aTotal++
-		}
-	}
-	phase.Store("probing")
-	// Build expected map (need isALAC for .m4a)
-	expectedMap := make(map[string]diffEntry)
-	expectedByBase := make(map[string]string) // base without ext -> expectedRel
-	for _, c := range sr.candidates {
-		// Cover only if subtree has music (candidates includes covers even for pruned dirs, filter here)
-		if c.isCover && !sr.subtreeHasMusic[c.dirRel] {
-			continue
-		}
-		// Determine expected dst rel (with preset ext if convert)
-		ext := strings.ToLower(filepath.Ext(c.src))
-		lcName := strings.ToLower(filepath.Base(c.src))
-		var dstRel string
-		var action string
-		var detail string
-		if coverFiles[lcName] {
-			dstRel = c.rel
-			action = "copy"
-			detail = "cover"
-		} else if losslessExt[ext] {
-			dstRel = strings.TrimSuffix(c.rel, filepath.Ext(c.rel)) + c.preset.Ext()
-			action = "convert"
-			detail = ext
-		} else if ext == ".m4a" {
-			isALAC, err := isALAC(c.src)
-			if err != nil {
-				dstRel = c.rel
-				action = "copy"
-				detail = "AAC"
-			} else if isALAC {
-				dstRel = strings.TrimSuffix(c.rel, filepath.Ext(c.rel)) + c.preset.Ext()
-				action = "convert"
-				detail = "ALAC"
-			} else {
-				dstRel = c.rel
-				action = "copy"
-				detail = "AAC"
-			}
-			probed.Add(1)
-		} else if lossyExt[ext] {
-			dstRel = c.rel
-			action = "copy"
-			detail = ext
-		} else {
-			continue
-		}
-		dstRel = filepath.ToSlash(dstRel)
-		expectedMap[dstRel] = diffEntry{rel: dstRel, srcRel: c.rel, preset: c.preset, action: action, isCover: c.isCover, detail: detail}
-		base := strings.TrimSuffix(dstRel, filepath.Ext(dstRel))
-		// Also base without ext for mismatch detection, but need to handle multiple files with same base different ext? Use first
-		if _, ok := expectedByBase[base]; !ok {
-			expectedByBase[base] = dstRel
-		}
-	}
-	// If no m4a, probed will stay 0, but phase already probing; spinner will show 0/0 briefly
-	phase.Store("scanning dst")
-	// Scan dst
-	actualMap := make(map[string]diffEntry)
-	actualByBase := make(map[string]string)
-	dstScanned := 0
-	err = filepath.WalkDir(dstRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if d.Name() == ".DS_Store" || strings.HasPrefix(d.Name(), "._") {
-			return nil
-		}
-		rel, err := filepath.Rel(dstRoot, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		dstScanned++
-		if dstScanned%50 == 0 {
-			scannedDst.Store(int64(dstScanned))
-		}
-		actualMap[rel] = diffEntry{rel: rel, srcRel: rel}
-		base := strings.TrimSuffix(rel, filepath.Ext(rel))
-		if _, ok := actualByBase[base]; !ok {
-			actualByBase[base] = rel
-		}
-		return nil
-	})
-	if err != nil {
-		close(done)
-		fatal(err.Error())
-	}
-	scannedDst.Store(int64(dstScanned))
+	// Count m4a for summary (for spinner display we already had probing)
 	close(done)
 	if !*jsonOut {
 		fmt.Fprintf(os.Stderr, "\r\033[K")
 	}
-
-	// Diff
-	missing := make(map[string]diffEntry)
-	extra := make(map[string]diffEntry)
-	mismatch := make(map[string]mismatchEntry)
-	upToDate := make(map[string]diffEntry)
-
-	for expRel, expEntry := range expectedMap {
-		if _, ok := actualMap[expRel]; !ok {
-			// Check preset mismatch: same base different ext exists in actual
-			base := strings.TrimSuffix(expRel, filepath.Ext(expRel))
-			if actRel, ok2 := actualByBase[base]; ok2 && actRel != expRel {
-				// Mismatch
-				mismatch[expRel] = mismatchEntry{expectedRel: expRel, actualRel: actRel, preset: expEntry.preset, srcRel: expEntry.srcRel}
-			} else {
-				missing[expRel] = expEntry
-			}
-		} else {
-			upToDate[expRel] = expEntry
-		}
-	}
-	for actRel, actEntry := range actualMap {
-		if _, ok := expectedMap[actRel]; !ok {
-			base := strings.TrimSuffix(actRel, filepath.Ext(actRel))
-			if expRel, ok2 := expectedByBase[base]; ok2 {
-				// Already counted as mismatch, skip extra
-				if _, isMismatch := mismatch[expRel]; isMismatch {
-					continue
-				}
-				// Check if this actual's base corresponds to expected with different ext -> already mismatch
-				// Need to check if expectedByBase has this base with different ext
-				// If so, skip
-				continue
-			}
-			extra[actRel] = actEntry
-		}
-	}
+	missing := dr.missing
+	extra := dr.extra
+	mismatch := dr.mismatch
+	upToDate := dr.upToDate
 
 	useColorTree := !*jsonOut && isTerminal(os.Stdout)
 	if *jsonOut {
