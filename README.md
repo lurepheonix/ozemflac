@@ -20,7 +20,7 @@ ozemflac [-workers N] [-preset aac|mp3] <source_dir> <destination_dir>
 Copies/converts the whole source tree to a new or empty destination. Fails if destination exists and is not empty, or if source and destination are the same.
 
 | Flag       | Default                                | Description                                                                                                                                                                                                           |
-| ---------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| ---------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | 
 | `-preset`  | `aac`                                  | Output preset. `aac` → `.m4a` (256k, `libfdk_aac` on Linux / `afconvert` on macOS), `mp3` → `.mp3` (320k `libmp3lame`). Strict lower-case; invalid value lists available presets. Per-folder `.ozemrc` (`preset = aac | mp3`) overrides, inherited via ancestors. |
 | `-workers` | `0` (auto `runtime.NumCPU()/2`, min 1) | Parallel conversion workers.                                                                                                                                                                                          |
 
