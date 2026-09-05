@@ -1,6 +1,14 @@
 # ozemflac
 
-Music library converter that mirrors a source directory to a destination. Lossless sources (`.flac`, `.alac`) and ALAC `.m4a` are transcoded to the selected preset, lossy sources (`.mp3`, `.aac`, `.ogg`, `.opus`) and AAC `.m4a` are copied, cover images are copied only if the subtree contains music. Per-folder presets via `.ozemrc` and ignores via `.ozemignore` (gitignore syntax, stacked) are respected. `tree`/`diff`/`sync` provide inspection and incremental update. Converted files keep the source metadata and original base name with the preset extension (`song.m4a (ALAC) → .m4a` is disambiguated).
+Music library converter that mirrors a source directory to a destination.
+
+Target use case: convert a large lossless music library into a smaller and lossy library for phone, laptop, etc., ignoring some files and doing cover optimization.
+
+Lossless sources (`.flac`, `.alac`) and ALAC `.m4a` are transcoded to the selected preset, lossy sources (`.mp3`, `.aac`, `.ogg`, `.opus`) and AAC `.m4a` are copied, cover images are copied only if the subtree contains music.
+
+Per-folder presets via `.ozemrc` and ignores via `.ozemignore` (gitignore syntax, stacked) are respected. `tree`/`diff`/`sync` provide inspection and incremental update.
+
+Converted files keep the source metadata and original base name with the preset extension (`song.m4a (ALAC) → .m4a` is disambiguated).
 
 ## Prerequisites
 
