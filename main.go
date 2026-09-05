@@ -44,15 +44,44 @@ func main() {
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	flag.Parse()
 
-	if len(os.Args) != 3 {
-		fatal("usage: converter <source_dir> <destination_dir>")
+	args := flag.Args()
+	if len(args) != 2 {
+		fatal("usage: converter [-workers N] <source_dir> <destination_dir>")
 	}
 
-	srcRoot := filepath.Clean(os.Args[1])
-	dstRoot := filepath.Clean(os.Args[2])
+	srcRoot := filepath.Clean(args[0])
+	dstRoot := filepath.Clean(args[1])
 
-	if _, err := os.Stat(dstRoot); err == nil {
-		fatal("destination directory already exists")
+	if srcRoot == dstRoot {
+		fatal("source and destination must be different directories")
+	}
+
+	// Validate source exists and is a directory
+	if info, err := os.Stat(srcRoot); err != nil {
+		fatal(fmt.Sprintf("source directory %q: %v", srcRoot, err))
+	} else if !info.IsDir() {
+		fatal(fmt.Sprintf("source %q is not a directory", srcRoot))
+	}
+
+	// Destination guard: allow non-existent or empty existing directory
+	if info, err := os.Stat(dstRoot); err == nil {
+		if !info.IsDir() {
+			fatal(fmt.Sprintf("destination %q exists and is not a directory", dstRoot))
+		}
+		entries, err := os.ReadDir(dstRoot)
+		if err != nil {
+			fatal(fmt.Sprintf("cannot read destination %q: %v", dstRoot, err))
+		}
+		if len(entries) > 0 {
+			fatal("destination directory already exists and is not empty")
+		}
+	} else if !os.IsNotExist(err) {
+		fatal(fmt.Sprintf("cannot stat destination %q: %v", dstRoot, err))
+	}
+
+	// Validate workers flag
+	if *workers < 0 {
+		fatal("workers must be >= 0")
 	}
 
 	// Gather all files first
@@ -89,12 +118,13 @@ func main() {
 	}
 
 	total := len(jobs)
+	if total == 0 {
+		fmt.Println("No files to process")
+		return
+	}
 	fmt.Printf("Found %d files to process\n", total)
 
-	// Channels for worker pool
-	jobChan := make(chan Job)
-	doneChan := make(chan struct{})
-	var wg sync.WaitGroup
+	// Determine worker count
 	var numWorkers int
 	if *workers > 0 {
 		numWorkers = *workers
@@ -107,23 +137,39 @@ func main() {
 
 	fmt.Printf("Using %d worker(s)\n", numWorkers)
 
+	// Buffered channels to avoid blocking workers on progress printer lag
+	jobChan := make(chan Job, numWorkers*2)
+	doneChan := make(chan string, numWorkers*2)
+
+	var wg sync.WaitGroup
+
 	// Progress state
 	var mu sync.Mutex
 	processed := 0
-	currentFile := ""
+	failed := 0
+	var failedFiles []string
 
-	// Progress printer
+	// Progress printer - owns processed counter to reduce contention
+	var printerWg sync.WaitGroup
+	printerWg.Add(1)
 	go func() {
-		for range doneChan {
+		defer printerWg.Done()
+		for name := range doneChan {
 			mu.Lock()
+			processed++
 			percent := float64(processed) / float64(total) * 100
 			barLen := 40
 			filled := int(percent / 100 * float64(barLen))
 			bar := strings.Repeat("█", filled) + strings.Repeat("-", barLen-filled)
-			fmt.Printf("\r[%s] %.1f%%  %s", bar, percent, currentFile)
+			fmt.Printf("\r[%s] %.1f%%  %s", bar, percent, name)
 			mu.Unlock()
 		}
-		fmt.Println("\nDone!")
+		fmt.Println()
+		if failed > 0 {
+			fmt.Printf("Done with %d error(s)\n", failed)
+		} else {
+			fmt.Println("Done!")
+		}
 	}()
 
 	// Launch workers
@@ -132,17 +178,16 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for job := range jobChan {
-				mu.Lock()
-				currentFile = filepath.Base(job.Src)
-				mu.Unlock()
-
-				processFile(job.Src, job.Dst)
-
-				mu.Lock()
-				processed++
-				mu.Unlock()
-
-				doneChan <- struct{}{}
+				baseName := filepath.Base(job.Src)
+				err := processFile(job.Src, job.Dst)
+				if err != nil {
+					mu.Lock()
+					failed++
+					failedFiles = append(failedFiles, fmt.Sprintf("%s: %v", job.Src, err))
+					mu.Unlock()
+					fmt.Fprintf(os.Stderr, "\nerror processing %s: %v\n", job.Src, err)
+				}
+				doneChan <- baseName
 			}
 		}()
 	}
@@ -155,43 +200,51 @@ func main() {
 
 	wg.Wait()
 	close(doneChan)
+	printerWg.Wait()
+
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d file(s) failed:\n", failed)
+		for _, f := range failedFiles {
+			fmt.Fprintln(os.Stderr, " ", f)
+		}
+		os.Exit(1)
+	}
 }
 
 // processFile decides how to handle each file
-func processFile(src, dst string) {
+func processFile(src, dst string) error {
 	ext := strings.ToLower(filepath.Ext(src))
 	lcName := strings.ToLower(filepath.Base(src))
 
 	// Ignore macOS metadata files (extra safety)
 	if lcName == ".ds_store" {
-		return
+		return nil
 	}
 
 	// Ignore macOS AppleDouble files (extra safety)
 	if strings.HasPrefix(lcName, "._") {
-		return
+		return nil
 	}
 
 	switch {
 	case coverFiles[lcName]:
-		_ = copyFile(src, dst)
+		return copyFile(src, dst)
 	case losslessExt[ext]:
-		_ = convertToAAC(src, dst)
+		return convertToAAC(src, dst)
 	case ext == ".m4a":
 		isALAC, err := isALAC(src)
 		if err != nil {
-			fmt.Println("warning: could not determine codec for", src, ":", err)
-			return
+			return fmt.Errorf("could not determine codec: %w", err)
 		}
 		if isALAC {
-			_ = convertToAAC(src, dst)
-		} else {
-			_ = copyFile(src, dst)
+			return convertToAAC(src, dst)
 		}
+		return copyFile(src, dst)
 	case lossyExt[ext]:
-		_ = copyFile(src, dst)
+		return copyFile(src, dst)
 	default:
-		// skip
+		// skip unknown types
+		return nil
 	}
 }
 
@@ -213,6 +266,7 @@ func convertToAAC(src, dst string) error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Run(); err != nil {
+		_ = os.Remove(dst)
 		return err
 	}
 
@@ -230,10 +284,18 @@ func convertToAAC(src, dst string) error {
 	)
 
 	if err := metaCmd.Run(); err != nil {
+		_ = os.Remove(dst)
+		_ = os.Remove(tmp)
 		return err
 	}
 
-	return os.Rename(tmp, dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		_ = os.Remove(dst)
+		return err
+	}
+
+	return nil
 }
 
 // isALAC uses afinfo to determine if a .m4a file is ALAC
@@ -269,13 +331,25 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	_, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+
+	if copyErr != nil {
+		_ = os.Remove(dst)
+		return copyErr
+	}
+	if syncErr != nil {
+		_ = os.Remove(dst)
+		return syncErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dst)
+		return closeErr
 	}
 
-	return out.Sync()
+	return nil
 }
 
 func fatal(msg string) {
