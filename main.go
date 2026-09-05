@@ -91,6 +91,10 @@ func main() {
 		runTree(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "diff" {
+		runDiff(os.Args[2:])
+		return
+	}
 
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
@@ -106,7 +110,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] <source_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] <source_dir> <destination_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
