@@ -40,13 +40,42 @@ type Job struct {
 	Dst string
 }
 
+type Preset string
+
+const (
+	PresetAAC Preset = "aac"
+	PresetMP3 Preset = "mp3"
+)
+
+func (p Preset) Ext() string {
+	switch p {
+	case PresetAAC:
+		return ".m4a"
+	case PresetMP3:
+		return ".mp3"
+	default:
+		return ".m4a"
+	}
+}
+
+var activePreset Preset
+
 func main() {
 	workers := flag.Int("workers", 0, "number of parallel workers")
+	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	flag.Parse()
+
+	// Strict lower-case validation, show available presets
+	switch Preset(*presetFlag) {
+	case PresetAAC, PresetMP3:
+		activePreset = Preset(*presetFlag)
+	default:
+		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
+	}
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] <source_dir> <destination_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)")
 	}
 
 	srcRoot := filepath.Clean(args[0])
@@ -92,16 +121,23 @@ func main() {
 		fatal("ffmpeg not found in $PATH — install ffmpeg")
 	}
 
-	switch runtime.GOOS {
-	case "linux":
-		// On Linux we require libfdk_aac encoder; fail fast instead of per-file errors
-		out, err := exec.Command("ffmpeg", "-encoders").Output()
-		if err != nil || !strings.Contains(string(out), "libfdk_aac") {
-			fatal("ffmpeg libfdk_aac encoder not available — install ffmpeg with --enable-libfdk-aac (e.g. ffmpeg-full)")
+	switch activePreset {
+	case PresetAAC:
+		switch runtime.GOOS {
+		case "linux":
+			out, err := exec.Command("ffmpeg", "-encoders").Output()
+			if err != nil || !strings.Contains(string(out), "libfdk_aac") {
+				fatal("ffmpeg libfdk_aac encoder not available — install ffmpeg with --enable-libfdk-aac (e.g. ffmpeg-full)")
+			}
+		case "darwin":
+			if _, err := os.Stat("/usr/bin/afconvert"); err != nil {
+				fatal("afconvert not found at /usr/bin/afconvert — install Xcode Command Line Tools")
+			}
 		}
-	case "darwin":
-		if _, err := os.Stat("/usr/bin/afconvert"); err != nil {
-			fatal("afconvert not found at /usr/bin/afconvert — install Xcode Command Line Tools")
+	case PresetMP3:
+		out, err := exec.Command("ffmpeg", "-encoders").Output()
+		if err != nil || !strings.Contains(string(out), "libmp3lame") {
+			fatal("ffmpeg libmp3lame encoder not available — install ffmpeg with --enable-libmp3lame")
 		}
 	}
 
@@ -251,14 +287,14 @@ func processFile(src, dst string) error {
 	case coverFiles[lcName]:
 		return copyFile(src, dst)
 	case losslessExt[ext]:
-		return convertToAAC(src, dst)
+		return convertLossless(src, dst, activePreset)
 	case ext == ".m4a":
 		isALAC, err := isALAC(src)
 		if err != nil {
 			return fmt.Errorf("could not determine codec: %w", err)
 		}
 		if isALAC {
-			return convertToAAC(src, dst)
+			return convertLossless(src, dst, activePreset)
 		}
 		return copyFile(src, dst)
 	case lossyExt[ext]:
