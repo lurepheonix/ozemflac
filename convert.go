@@ -12,17 +12,17 @@ import (
 )
 
 // convertLossless dispatches to the preset-specific converter
-func convertLossless(src, dst string, preset Preset) error {
+func convertLossless(src, dst string, preset Preset, preserveArt bool) error {
 	switch preset {
 	case PresetMP3:
-		return convertToMP3(src, dst)
+		return convertToMP3(src, dst, preserveArt)
 	default:
-		return convertToAAC(src, dst)
+		return convertToAAC(src, dst, preserveArt)
 	}
 }
 
 // convertToMP3 uses ffmpeg with libmp3lame to encode to MP3 320k CBR (shared)
-func convertToMP3(src, dst string) error {
+func convertToMP3(src, dst string, preserveArt bool) error {
 	dst = strings.TrimSuffix(dst, filepath.Ext(dst)) + ".mp3"
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
@@ -33,15 +33,23 @@ func convertToMP3(src, dst string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	args := []string{
 		"-y",
 		"-i", src,
 		"-map", "0:a",
 		"-c:a", "libmp3lame",
 		"-b:a", "320k",
 		"-map_metadata", "0",
-		tmp,
-	)
+	}
+	if preserveArt {
+		args = append(args,
+			"-map", "0:v?",
+			"-c:v", "copy",
+			"-disposition:v", "attached_pic",
+		)
+	}
+	args = append(args, tmp)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	if err := cmd.Run(); err != nil {
 		_ = os.Remove(tmp)
 		_ = os.Remove(dst)

@@ -10,7 +10,7 @@ import (
 )
 
 // convertToAAC uses afconvert to encode a lossless file to high-quality AAC (macOS)
-func convertToAAC(src, dst string) error {
+func convertToAAC(src, dst string, preserveArt bool) error {
 	dst = strings.TrimSuffix(dst, filepath.Ext(dst)) + ".m4a"
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
@@ -33,15 +33,25 @@ func convertToAAC(src, dst string) error {
 
 	// Copy metadata from source to encoded file using ffmpeg
 	tmp := dst + ".tmp.m4a"
-	metaCmd := exec.Command(
-		"ffmpeg",
+	metaArgs := []string{
 		"-y",
 		"-i", src,
 		"-i", dst,
 		"-map", "1:a",
 		"-map_metadata", "0",
 		"-c", "copy",
-		tmp,
+	}
+	if preserveArt {
+		metaArgs = append(metaArgs,
+			"-map", "0:v?",
+			"-c:v", "copy",
+			"-disposition:v", "attached_pic",
+		)
+	}
+	metaArgs = append(metaArgs, tmp)
+	metaCmd := exec.Command(
+		"ffmpeg",
+		metaArgs...,
 	)
 
 	if err := metaCmd.Run(); err != nil {

@@ -28,6 +28,7 @@ func runSync(args []string) {
 	deleteExtra := fs.Bool("delete-extra", false, "delete extra files in destination")
 	workers := fs.Int("workers", 0, "number of parallel workers (0 = auto)")
 	noExtractCover := fs.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
+	preserveArtFlag := fs.Bool("preserve-embedded-art", false, "keep embedded cover art in converted files")
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
 	}
@@ -39,12 +40,13 @@ func runSync(args []string) {
 		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
 	}
 	defExtract := !*noExtractCover
+	defPreserveArt := *preserveArtFlag
 	if *workers < 0 {
 		fatal("workers must be >= 0")
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
+		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])
@@ -262,7 +264,7 @@ func runSync(args []string) {
 			continue
 		}
 		src := filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel))
-		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset})
+		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset, PreserveArt: resolvePreserveArt(sr, dirOfRel(entry.srcRel), defPreserveArt)})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {
 				needMP3 = true
@@ -282,7 +284,7 @@ func runSync(args []string) {
 			continue
 		}
 		src := filepath.Join(srcRoot, filepath.FromSlash(me.srcRel))
-		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset})
+		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset, PreserveArt: resolvePreserveArt(sr, dirOfRel(me.srcRel), defPreserveArt)})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {
 				needMP3 = true

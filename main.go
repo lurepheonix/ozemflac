@@ -46,6 +46,8 @@ type Job struct {
 	// Src/Dst are the music source and cover.jpg destination for display,
 	// ExtractCoverDir is the source dirRel to extract from.
 	ExtractCoverDir string
+	// PreserveArt keeps embedded cover art in converted files.
+	PreserveArt bool
 }
 
 // isExtractCover reports whether this job extracts embedded art.
@@ -58,7 +60,7 @@ func (j Job) run(sr *scanResult, srcRoot, dstRoot string) error {
 	if j.isExtractCover() {
 		return extractCoverForDir(sr, srcRoot, dstRoot, j.ExtractCoverDir)
 	}
-	return processFile(j.Src, j.Dst, j.Preset)
+	return processFile(j.Src, j.Dst, j.Preset, j.PreserveArt)
 }
 
 type Preset string
@@ -98,6 +100,8 @@ type scanResult struct {
 	dirHasPreset         map[string]bool
 	dirExtractCover      map[string]bool
 	dirHasExtractCover   map[string]bool
+	dirPreserveArt       map[string]bool
+	dirHasPreserveArt    map[string]bool
 	allDirs              []string
 	dirHasMusicCandidate map[string]bool
 	subtreeHasMusic      map[string]bool
@@ -122,8 +126,10 @@ func main() {
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	noExtractCover := flag.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
+	preserveArt := flag.Bool("preserve-embedded-art", false, "keep embedded cover art in converted files")
 	flag.Parse()
 	defExtract := !*noExtractCover
+	defPreserveArt := *preserveArt
 
 	// Strict lower-case validation, show available presets
 	switch Preset(*presetFlag) {
@@ -135,7 +141,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
@@ -205,7 +211,7 @@ func main() {
 			} else {
 				needAAC = true
 			}
-			jobs = append(jobs, Job{Src: c.src, Dst: filepath.Join(dstRoot, filepath.FromSlash(c.rel)), Preset: c.preset})
+			jobs = append(jobs, Job{Src: c.src, Dst: filepath.Join(dstRoot, filepath.FromSlash(c.rel)), Preset: c.preset, PreserveArt: resolvePreserveArt(sr, c.dirRel, defPreserveArt)})
 		}
 	}
 
@@ -297,7 +303,7 @@ func main() {
 			defer wg.Done()
 			for job := range jobChan {
 				baseName := filepath.Base(job.Src)
-				err := processFile(job.Src, job.Dst, job.Preset)
+				err := job.run(sr, srcRoot, dstRoot)
 				if err != nil {
 					mu.Lock()
 					failed++
@@ -371,6 +377,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 	dirHasPreset := make(map[string]bool)
 	dirExtractCover := make(map[string]bool)
 	dirHasExtractCover := make(map[string]bool)
+	dirPreserveArt := make(map[string]bool)
+	dirHasPreserveArt := make(map[string]bool)
 	var candidates []candidate
 	var ignoredFiles []candidate
 	dirHasMusicCandidate := make(map[string]bool)
@@ -431,6 +439,10 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 				if rc.hasExtractCover {
 					dirExtractCover[relDir] = rc.extractCover
 					dirHasExtractCover[relDir] = true
+				}
+				if rc.hasPreserveArt {
+					dirPreserveArt[relDir] = rc.preserveArt
+					dirHasPreserveArt[relDir] = true
 				}
 			}
 			return nil
@@ -544,6 +556,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 		dirHasPreset:         dirHasPreset,
 		dirExtractCover:      dirExtractCover,
 		dirHasExtractCover:   dirHasExtractCover,
+		dirPreserveArt:       dirPreserveArt,
+		dirHasPreserveArt:    dirHasPreserveArt,
 		allDirs:              allDirs,
 		dirHasMusicCandidate: dirHasMusicCandidate,
 		subtreeHasMusic:      subtreeHasMusic,
@@ -553,7 +567,7 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 }
 
 // processFile decides how to handle each file
-func processFile(src, dst string, preset Preset) error {
+func processFile(src, dst string, preset Preset, preserveArt bool) error {
 	ext := strings.ToLower(filepath.Ext(src))
 	lcName := strings.ToLower(filepath.Base(src))
 
@@ -571,14 +585,14 @@ func processFile(src, dst string, preset Preset) error {
 	case coverFiles[lcName]:
 		return copyFile(src, dst)
 	case losslessExt[ext]:
-		return convertLossless(src, dst, preset)
+		return convertLossless(src, dst, preset, preserveArt)
 	case ext == ".m4a":
 		isALAC, err := isALAC(src)
 		if err != nil {
 			return fmt.Errorf("could not determine codec: %w", err)
 		}
 		if isALAC {
-			return convertLossless(src, dst, preset)
+			return convertLossless(src, dst, preset, preserveArt)
 		}
 		return copyFile(src, dst)
 	case lossyExt[ext]:
@@ -661,6 +675,8 @@ type ozemrc struct {
 	hasPreset        bool
 	extractCover     bool
 	hasExtractCover  bool
+	preserveArt      bool
+	hasPreserveArt   bool
 }
 
 func parseBoolOzemrc(val string) (bool, bool) {
@@ -704,6 +720,13 @@ func parseOzemrc(content string, dirPath string) (ozemrc, error) {
 			}
 			rc.extractCover = b
 			rc.hasExtractCover = true
+		} else if key == "preserve_embedded_art" {
+			b, ok := parseBoolOzemrc(val)
+			if !ok {
+				return ozemrc{}, fmt.Errorf("invalid preserve_embedded_art %q in %s: expected true/false", val, filepath.Join(dirPath, ".ozemrc"))
+			}
+			rc.preserveArt = b
+			rc.hasPreserveArt = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -735,6 +758,15 @@ func ancestorsOf(dir string) []string {
 	return ancestors
 }
 
+// dirOfRel returns the slash-form dir of a slash-form file rel ("." for top level).
+func dirOfRel(rel string) string {
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	if dir == "" {
+		dir = "."
+	}
+	return dir
+}
+
 // effectivePresetFor returns nearest ancestor preset else default
 func effectivePresetFor(dirRel string, dirPresets map[string]Preset, dirHasPreset map[string]bool, def Preset) Preset {
 	ancestors := ancestorsOf(dirRel)
@@ -757,6 +789,32 @@ func effectiveExtractCoverFor(dirRel string, dirVals map[string]bool, dirHas map
 		}
 	}
 	return def
+}
+
+// effectivePreserveArtFor returns nearest ancestor preserve_embedded_art else default (false).
+func effectivePreserveArtFor(dirRel string, dirVals map[string]bool, dirHas map[string]bool, def bool) bool {
+	ancestors := ancestorsOf(dirRel)
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		anc := ancestors[i]
+		if dirHas[anc] {
+			return dirVals[anc]
+		}
+	}
+	return def
+}
+
+// resolvePreserveArt reports whether converted files in dirRel should keep
+// embedded cover art. A true CLI default (--preserve-embedded-art) enables it
+// globally regardless of per-folder .ozemrc; otherwise the nearest
+// preserve_embedded_art setting wins (default false).
+func resolvePreserveArt(sr *scanResult, dirRel string, defPreserve bool) bool {
+	if defPreserve {
+		return true
+	}
+	if sr == nil {
+		return false
+	}
+	return effectivePreserveArtFor(dirRel, sr.dirPreserveArt, sr.dirHasPreserveArt, false)
 }
 
 // isIgnored checks if fileRel (slash, from srcRoot) is ignored by stacked dirPatterns using go-git gitignore
