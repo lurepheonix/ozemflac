@@ -129,8 +129,8 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 		}
 	}
 	// Synthetic expected covers extracted from embedded art (only when dir
-	// has music, no cover file, and extraction is enabled).
-	if defExtract {
+	// has music, no cover file, and extraction is enabled for that dir).
+	{
 		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
 			var coverRel string
 			if dirRel == "." {

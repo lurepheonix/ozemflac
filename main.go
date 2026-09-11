@@ -326,25 +326,24 @@ func main() {
 	close(doneChan)
 	printerWg.Wait()
 
-	// Extract embedded covers for dirs without a cover file (enabled by default)
+	// Extract embedded covers for dirs without a cover file (enabled by default,
+	// overridable per-dir via .ozemrc extract_cover)
 	extracted := 0
 	var extractFailed []string
-	if defExtract {
-		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
-			if !hasEmbeddedArtForDir(sr, dirRel) {
-				continue
-			}
-			if err := extractCoverForDir(sr, srcRoot, dstRoot, dirRel); err != nil {
-				extractFailed = append(extractFailed, fmt.Sprintf("%s: %v", dirRel, err))
-				fmt.Fprintf(os.Stderr, "warning: could not extract cover for %q: %v\n", dirRel, err)
-				continue
-			}
-			extracted++
-			fmt.Printf("extracted cover for %s -> cover.jpg\n", dirRel)
+	for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
+		if !hasEmbeddedArtForDir(sr, dirRel) {
+			continue
 		}
-		if extracted > 0 {
-			fmt.Printf("Extracted %d cover(s)\n", extracted)
+		if err := extractCoverForDir(sr, srcRoot, dstRoot, dirRel); err != nil {
+			extractFailed = append(extractFailed, fmt.Sprintf("%s: %v", dirRel, err))
+			fmt.Fprintf(os.Stderr, "warning: could not extract cover for %q: %v\n", dirRel, err)
+			continue
 		}
+		extracted++
+		fmt.Printf("extracted cover for %s -> cover.jpg\n", dirRel)
+	}
+	if extracted > 0 {
+		fmt.Printf("Extracted %d cover(s)\n", extracted)
 	}
 
 	if failed > 0 {
@@ -804,17 +803,14 @@ func effectivePreserveArtFor(dirRel string, dirVals map[string]bool, dirHas map[
 }
 
 // resolvePreserveArt reports whether converted files in dirRel should keep
-// embedded cover art. A true CLI default (--preserve-embedded-art) enables it
-// globally regardless of per-folder .ozemrc; otherwise the nearest
-// preserve_embedded_art setting wins (default false).
+// embedded cover art. defPreserve (true with --preserve-embedded-art) is only
+// the default: the nearest per-folder .ozemrc preserve_embedded_art setting
+// wins when present.
 func resolvePreserveArt(sr *scanResult, dirRel string, defPreserve bool) bool {
-	if defPreserve {
-		return true
-	}
 	if sr == nil {
-		return false
+		return defPreserve
 	}
-	return effectivePreserveArtFor(dirRel, sr.dirPreserveArt, sr.dirHasPreserveArt, false)
+	return effectivePreserveArtFor(dirRel, sr.dirPreserveArt, sr.dirHasPreserveArt, defPreserve)
 }
 
 // isIgnored checks if fileRel (slash, from srcRoot) is ignored by stacked dirPatterns using go-git gitignore

@@ -132,8 +132,8 @@ func runTree(args []string) {
 			// already counted via probed.Add above, but ensure count for non-m4a not double
 		}
 	}
-	// Synthetic extracted covers (enabled by default)
-	if defExtract {
+	// Synthetic extracted covers (enabled by default, overridable per-dir)
+	{
 		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
 			found := false
 			for _, src := range musicFilesInDir(sr, dirRel) {

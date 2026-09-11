@@ -15,10 +15,10 @@ const ExtractedCoverName = "cover.jpg"
 
 // dirsNeedingCoverExtraction returns sorted dirRels that have music but no
 // cover file and where extraction is enabled. If sr is nil it returns nil.
-// A false defExtract (from --no-extract-cover) disables extraction globally,
-// regardless of per-folder .ozemrc.
+// defExtract (false with --no-extract-cover) is only the default: the nearest
+// per-folder .ozemrc extract_cover setting wins when present.
 func dirsNeedingCoverExtraction(sr *scanResult, defExtract bool) []string {
-	if sr == nil || !defExtract {
+	if sr == nil {
 		return nil
 	}
 	dirHasCover := make(map[string]bool)
