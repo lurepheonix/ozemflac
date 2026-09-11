@@ -27,6 +27,7 @@ func runSync(args []string) {
 	keepMismatched := fs.Bool("keep-mismatched", false, "keep mismatched files (do not replace preset mismatches)")
 	deleteExtra := fs.Bool("delete-extra", false, "delete extra files in destination")
 	workers := fs.Int("workers", 0, "number of parallel workers (0 = auto)")
+	noExtractCover := fs.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
 	}
@@ -37,12 +38,13 @@ func runSync(args []string) {
 	default:
 		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
 	}
+	defExtract := !*noExtractCover
 	if *workers < 0 {
 		fatal("workers must be >= 0")
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] <source_dir> <destination_dir>")
+		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])
@@ -88,7 +90,7 @@ func runSync(args []string) {
 		}, done, useColorSpinner)
 	}
 
-	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, &scannedSrc, &scannedDst, &probed, &phase)
+	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, &scannedSrc, &scannedDst, &probed, &phase)
 	if err != nil {
 		close(done)
 		fatal(err.Error())
@@ -254,8 +256,12 @@ func runSync(args []string) {
 	needAAC := false
 	needMP3 := false
 	for rel, entry := range filteredMissing {
-		src := filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel))
 		dst := filepath.Join(dstRoot, filepath.FromSlash(rel))
+		if entry.action == "extract-cover" {
+			jobs = append(jobs, Job{Src: filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel)), Dst: dst, Preset: entry.preset, ExtractCoverDir: entry.srcRel})
+			continue
+		}
+		src := filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel))
 		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {
@@ -270,8 +276,12 @@ func runSync(args []string) {
 		if !ok {
 			continue
 		}
-		src := filepath.Join(srcRoot, filepath.FromSlash(me.srcRel))
 		dst := filepath.Join(dstRoot, filepath.FromSlash(expRel))
+		if entry.action == "extract-cover" {
+			jobs = append(jobs, Job{Src: filepath.Join(srcRoot, filepath.FromSlash(me.srcRel)), Dst: dst, Preset: entry.preset, ExtractCoverDir: me.srcRel})
+			continue
+		}
+		src := filepath.Join(srcRoot, filepath.FromSlash(me.srcRel))
 		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {
@@ -359,7 +369,10 @@ func runSync(args []string) {
 				defer wg.Done()
 				for job := range jobChan {
 					baseName := filepath.Base(job.Src)
-					err := processFile(job.Src, job.Dst, job.Preset)
+					if job.isExtractCover() {
+						baseName = ExtractedCoverName
+					}
+					err := job.run(sr, srcRoot, dstRoot)
 					if err != nil {
 						mu.Lock()
 						failed++
@@ -782,14 +795,19 @@ func printSyncTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 		// Replaced first (like mismatch)
 		for _, expRel := range replacedFiles {
 			me := mismatch[expRel]
-			srcBase := filepath.Base(me.srcRel)
 			rightFile := filepath.Base(me.actualRel)
-			dstExt := presetForRel(expRel, sr, defPreset).Ext()
-			srcExt := strings.ToLower(filepath.Ext(srcBase))
-			leftRaw := srcBase + " → " + dstExt
-			if strings.EqualFold(srcExt, ".m4a") && strings.EqualFold(dstExt, ".m4a") {
-				if entry, ok := expectedMap[expRel]; ok && entry.detail == "ALAC" {
-					leftRaw = srcBase + " (ALAC) → " + dstExt
+			var leftRaw string
+			if expEntry, ok := expectedMap[expRel]; ok && expEntry.action == "extract-cover" {
+				leftRaw = filepath.Base(expRel) + " (embedded)"
+			} else {
+				srcBase := filepath.Base(me.srcRel)
+				dstExt := presetForRel(expRel, sr, defPreset).Ext()
+				srcExt := strings.ToLower(filepath.Ext(srcBase))
+				leftRaw = srcBase + " → " + dstExt
+				if strings.EqualFold(srcExt, ".m4a") && strings.EqualFold(dstExt, ".m4a") {
+					if entry, ok := expectedMap[expRel]; ok && entry.detail == "ALAC" {
+						leftRaw = srcBase + " (ALAC) → " + dstExt
+					}
 				}
 			}
 			fBranch := "├── "
@@ -810,14 +828,19 @@ func printSyncTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 		}
 		for _, rel := range addedFiles {
 			entry := missing[rel]
-			srcBase := filepath.Base(entry.srcRel)
-			dstExt := filepath.Ext(rel)
-			leftRaw := srcBase
-			if entry.action == "convert" {
-				if entry.detail == "ALAC" && strings.EqualFold(filepath.Ext(srcBase), dstExt) {
-					leftRaw = srcBase + " (ALAC) → " + dstExt
-				} else {
-					leftRaw = srcBase + " → " + dstExt
+			var leftRaw string
+			if entry.action == "extract-cover" {
+				leftRaw = filepath.Base(rel) + " (embedded)"
+			} else {
+				srcBase := filepath.Base(entry.srcRel)
+				dstExt := filepath.Ext(rel)
+				leftRaw = srcBase
+				if entry.action == "convert" {
+					if entry.detail == "ALAC" && strings.EqualFold(filepath.Ext(srcBase), dstExt) {
+						leftRaw = srcBase + " (ALAC) → " + dstExt
+					} else {
+						leftRaw = srcBase + " → " + dstExt
+					}
 				}
 			}
 			fBranch := "├── "

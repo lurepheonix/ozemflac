@@ -42,6 +42,23 @@ type Job struct {
 	Src    string
 	Dst    string
 	Preset Preset
+	// ExtractCoverDir is set for embedded-cover extraction jobs.
+	// Src/Dst are the music source and cover.jpg destination for display,
+	// ExtractCoverDir is the source dirRel to extract from.
+	ExtractCoverDir string
+}
+
+// isExtractCover reports whether this job extracts embedded art.
+func (j Job) isExtractCover() bool {
+	return j.ExtractCoverDir != ""
+}
+
+// runJob executes a single Job (copy/convert or cover extraction).
+func (j Job) run(sr *scanResult, srcRoot, dstRoot string) error {
+	if j.isExtractCover() {
+		return extractCoverForDir(sr, srcRoot, dstRoot, j.ExtractCoverDir)
+	}
+	return processFile(j.Src, j.Dst, j.Preset)
 }
 
 type Preset string
@@ -79,6 +96,8 @@ type scanResult struct {
 	dirPatterns          map[string][]gitignore.Pattern
 	dirPresets           map[string]Preset
 	dirHasPreset         map[string]bool
+	dirExtractCover      map[string]bool
+	dirHasExtractCover   map[string]bool
 	allDirs              []string
 	dirHasMusicCandidate map[string]bool
 	subtreeHasMusic      map[string]bool
@@ -102,7 +121,9 @@ func main() {
 
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
+	noExtractCover := flag.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
 	flag.Parse()
+	defExtract := !*noExtractCover
 
 	// Strict lower-case validation, show available presets
 	switch Preset(*presetFlag) {
@@ -114,7 +135,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] <source_dir> <destination_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
@@ -299,6 +320,27 @@ func main() {
 	close(doneChan)
 	printerWg.Wait()
 
+	// Extract embedded covers for dirs without a cover file (enabled by default)
+	extracted := 0
+	var extractFailed []string
+	if defExtract {
+		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
+			if !hasEmbeddedArtForDir(sr, dirRel) {
+				continue
+			}
+			if err := extractCoverForDir(sr, srcRoot, dstRoot, dirRel); err != nil {
+				extractFailed = append(extractFailed, fmt.Sprintf("%s: %v", dirRel, err))
+				fmt.Fprintf(os.Stderr, "warning: could not extract cover for %q: %v\n", dirRel, err)
+				continue
+			}
+			extracted++
+			fmt.Printf("extracted cover for %s -> cover.jpg\n", dirRel)
+		}
+		if extracted > 0 {
+			fmt.Printf("Extracted %d cover(s)\n", extracted)
+		}
+	}
+
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d file(s) failed:\n", failed)
 		for _, f := range failedFiles {
@@ -306,6 +348,19 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	if len(extractFailed) > 0 {
+		fmt.Fprintf(os.Stderr, "%d cover(s) could not be extracted (source has no usable embedded art or ffmpeg failed)\n", len(extractFailed))
+	}
+}
+
+// hasEmbeddedArtForDir reports whether any music file in dir has embedded art.
+func hasEmbeddedArtForDir(sr *scanResult, dirRel string) bool {
+	for _, src := range musicFilesInDir(sr, dirRel) {
+		if hasEmbeddedArt(src) {
+			return true
+		}
+	}
+	return false
 }
 
 // scanSource walks srcRoot and collects candidates with stacked ignore/preset handling
@@ -314,6 +369,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 	dirPatterns := make(map[string][]gitignore.Pattern)
 	dirPresets := make(map[string]Preset)
 	dirHasPreset := make(map[string]bool)
+	dirExtractCover := make(map[string]bool)
+	dirHasExtractCover := make(map[string]bool)
 	var candidates []candidate
 	var ignoredFiles []candidate
 	dirHasMusicCandidate := make(map[string]bool)
@@ -363,13 +420,17 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 			// Load .ozemrc
 			rcPath := filepath.Join(path, ".ozemrc")
 			if data, err := os.ReadFile(rcPath); err == nil {
-				preset, ok, perr := parseOzemrc(string(data), path)
+				rc, perr := parseOzemrc(string(data), path)
 				if perr != nil {
 					return perr
 				}
-				if ok {
-					dirPresets[relDir] = preset
+				if rc.hasPreset {
+					dirPresets[relDir] = rc.preset
 					dirHasPreset[relDir] = true
+				}
+				if rc.hasExtractCover {
+					dirExtractCover[relDir] = rc.extractCover
+					dirHasExtractCover[relDir] = true
 				}
 			}
 			return nil
@@ -481,6 +542,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 		dirPatterns:          dirPatterns,
 		dirPresets:           dirPresets,
 		dirHasPreset:         dirHasPreset,
+		dirExtractCover:      dirExtractCover,
+		dirHasExtractCover:   dirHasExtractCover,
 		allDirs:              allDirs,
 		dirHasMusicCandidate: dirHasMusicCandidate,
 		subtreeHasMusic:      subtreeHasMusic,
@@ -592,8 +655,28 @@ func fatal(msg string) {
 	os.Exit(1)
 }
 
-// parseOzemrc parses .ozemrc INI content. Returns preset, ok, error.
-func parseOzemrc(content string, dirPath string) (Preset, bool, error) {
+// ozemrc holds parsed per-folder settings from .ozemrc.
+type ozemrc struct {
+	preset           Preset
+	hasPreset        bool
+	extractCover     bool
+	hasExtractCover  bool
+}
+
+func parseBoolOzemrc(val string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// parseOzemrc parses .ozemrc INI content.
+func parseOzemrc(content string, dirPath string) (ozemrc, error) {
+	var rc ozemrc
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -609,16 +692,24 @@ func parseOzemrc(content string, dirPath string) (Preset, bool, error) {
 		if key == "preset" {
 			switch Preset(val) {
 			case PresetAAC, PresetMP3:
-				return Preset(val), true, nil
+				rc.preset = Preset(val)
+				rc.hasPreset = true
 			default:
-				return "", false, fmt.Errorf("invalid preset %q in %s: available presets: aac, mp3", val, filepath.Join(dirPath, ".ozemrc"))
+				return ozemrc{}, fmt.Errorf("invalid preset %q in %s: available presets: aac, mp3", val, filepath.Join(dirPath, ".ozemrc"))
 			}
+		} else if key == "extract_cover" {
+			b, ok := parseBoolOzemrc(val)
+			if !ok {
+				return ozemrc{}, fmt.Errorf("invalid extract_cover %q in %s: expected true/false", val, filepath.Join(dirPath, ".ozemrc"))
+			}
+			rc.extractCover = b
+			rc.hasExtractCover = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", false, err
+		return ozemrc{}, err
 	}
-	return "", false, nil
+	return rc, nil
 }
 
 // ancestorsOf returns list of ancestors from "." up to dir inclusive in order parent->child
@@ -651,6 +742,18 @@ func effectivePresetFor(dirRel string, dirPresets map[string]Preset, dirHasPrese
 		anc := ancestors[i]
 		if dirHasPreset[anc] {
 			return dirPresets[anc]
+		}
+	}
+	return def
+}
+
+// effectiveExtractCoverFor returns nearest ancestor extract_cover else default (true).
+func effectiveExtractCoverFor(dirRel string, dirVals map[string]bool, dirHas map[string]bool, def bool) bool {
+	ancestors := ancestorsOf(dirRel)
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		anc := ancestors[i]
+		if dirHas[anc] {
+			return dirVals[anc]
 		}
 	}
 	return def

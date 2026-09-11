@@ -36,6 +36,7 @@ func runTree(args []string) {
 	jsonOut := fs.Bool("json", false, "output JSON")
 	expand := fs.Bool("expand", false, "expand file list even when uniform preset")
 	fs.BoolVar(expand, "v", false, "alias for --expand")
+	noExtractCover := fs.Bool("no-extract-cover", false, "do not show embedded cover extraction to cover.jpg")
 	// Parse
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
@@ -48,10 +49,11 @@ func runTree(args []string) {
 	default:
 		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
 	}
+	defExtract := !*noExtractCover
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fatal("usage: ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] <source_dir>")
+		fatal("usage: ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	if info, err := os.Stat(srcRoot); err != nil {
@@ -128,6 +130,33 @@ func runTree(args []string) {
 		candidateActions[c.src] = fileInfo{cand: c, action: action, detail: detail}
 		if ext == ".m4a" {
 			// already counted via probed.Add above, but ensure count for non-m4a not double
+		}
+	}
+	// Synthetic extracted covers (enabled by default)
+	if defExtract {
+		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
+			found := false
+			for _, src := range musicFilesInDir(sr, dirRel) {
+				probed.Add(1)
+				if hasEmbeddedArt(src) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			var coverRel string
+			if dirRel == "." {
+				coverRel = ExtractedCoverName
+			} else {
+				coverRel = dirRel + "/" + ExtractedCoverName
+			}
+			preset := effectivePresetFor(dirRel, sr.dirPresets, sr.dirHasPreset, defPreset)
+			synKey := "extract:" + dirRel
+			syn := candidate{src: synKey, rel: coverRel, dirRel: dirRel, isCover: true, isMusic: false, preset: preset}
+			sr.candidates = append(sr.candidates, syn)
+			candidateActions[synKey] = fileInfo{cand: syn, action: "extract-cover", detail: "embedded"}
 		}
 	}
 	close(done)
@@ -532,7 +561,7 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 	}
 	// Sort files by base name
 	sort.Slice(filesToShow, func(i, j int) bool {
-		return strings.ToLower(filepath.Base(filesToShow[i].src)) < strings.ToLower(filepath.Base(filesToShow[j].src))
+		return strings.ToLower(filepath.Base(filesToShow[i].rel)) < strings.ToLower(filepath.Base(filesToShow[j].rel))
 	})
 
 	// Determine file listing
@@ -543,12 +572,14 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 			if isLastFile {
 				fBranch = "└── "
 			}
-			ext := strings.ToLower(filepath.Ext(c.src))
-			lcName := strings.ToLower(filepath.Base(c.src))
+			ext := strings.ToLower(filepath.Ext(c.rel))
+			lcName := strings.ToLower(filepath.Base(c.rel))
 			fi, ok := actions[c.src]
 			actionStr := ""
 			if ok {
-				if coverFiles[lcName] {
+				if fi.action == "extract-cover" {
+					actionStr = colorize("extract (embedded)", colorCyan, useColor)
+				} else if coverFiles[lcName] {
 					actionStr = colorize("copy (cover)", colorCyan, useColor)
 				} else if losslessExt[ext] {
 					actionStr = colorize(fmt.Sprintf("convert → %s (%s)", c.preset.Ext(), c.preset), colorGreen, useColor)
@@ -566,7 +597,7 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 			} else {
 				actionStr = "copy"
 			}
-			fmt.Printf("%s%s%s [%s]\n", fileBranchPrefix, fBranch, filepath.Base(c.src), actionStr)
+			fmt.Printf("%s%s%s [%s]\n", fileBranchPrefix, fBranch, filepath.Base(c.rel), actionStr)
 		}
 	} else {
 		// Collapsed: summary line already shows counts, no extra hint
@@ -664,7 +695,7 @@ func jsonDirFromNode(n *dirNode, all map[string]*dirNode, actions map[string]fil
 			} else if c.isCover {
 				jd.Stats.Covers++
 			}
-			ext := strings.ToLower(filepath.Ext(c.src))
+			ext := strings.ToLower(filepath.Ext(c.rel))
 			jd.Stats.ByExt[ext]++
 			fi, ok := actions[c.src]
 			action := "copy"
@@ -673,7 +704,7 @@ func jsonDirFromNode(n *dirNode, all map[string]*dirNode, actions map[string]fil
 				action = fi.action
 				detail = fi.detail
 			}
-			jf := jsonFile{Name: filepath.Base(c.src), Rel: c.rel, Ext: ext, Preset: c.preset, Action: action, Detail: detail}
+			jf := jsonFile{Name: filepath.Base(c.rel), Rel: c.rel, Ext: ext, Preset: c.preset, Action: action, Detail: detail}
 			jd.Files = append(jd.Files, jf)
 		}
 		// Count byExt for stats already done; for pruned we keep stats empty (0)

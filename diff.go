@@ -60,7 +60,7 @@ type diffNode struct {
 // computeDiff performs the full diff between src and dst, reusing the same logic as diff.
 // It handles scanning src (with isALAC probing), scanning dst, and building missing/mismatch/extra sets.
 // The caller may provide atomic counters and phase for spinner progress (or nil to skip).
-func computeDiff(srcRoot, dstRoot string, defPreset Preset, scannedSrc, scannedDst, probed *atomic.Int64, phase *atomic.Value) (*scanResult, map[string]diffEntry, map[string]diffEntry, *diffResult, error) {
+func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, scannedSrc, scannedDst, probed *atomic.Int64, phase *atomic.Value) (*scanResult, map[string]diffEntry, map[string]diffEntry, *diffResult, error) {
 	// Scan src
 	sr, err := scanSource(srcRoot, defPreset, func(n int) {
 		if scannedSrc != nil {
@@ -126,6 +126,40 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, scannedSrc, scannedD
 		// Also base without ext for mismatch detection, but need to handle multiple files with same base different ext? Use first
 		if _, ok := expectedByBase[base]; !ok {
 			expectedByBase[base] = dstRel
+		}
+	}
+	// Synthetic expected covers extracted from embedded art (only when dir
+	// has music, no cover file, and extraction is enabled).
+	if defExtract {
+		for _, dirRel := range dirsNeedingCoverExtraction(sr, defExtract) {
+			var coverRel string
+			if dirRel == "." {
+				coverRel = ExtractedCoverName
+			} else {
+				coverRel = dirRel + "/" + ExtractedCoverName
+			}
+			if _, ok := expectedMap[coverRel]; ok {
+				continue
+			}
+			found := false
+			for _, src := range musicFilesInDir(sr, dirRel) {
+				if probed != nil {
+					probed.Add(1)
+				}
+				if hasEmbeddedArt(src) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			preset := effectivePresetFor(dirRel, sr.dirPresets, sr.dirHasPreset, defPreset)
+			expectedMap[coverRel] = diffEntry{rel: coverRel, srcRel: dirRel, preset: preset, action: "extract-cover", isCover: true, detail: "embedded"}
+			base := strings.TrimSuffix(coverRel, filepath.Ext(coverRel))
+			if _, ok := expectedByBase[base]; !ok {
+				expectedByBase[base] = coverRel
+			}
 		}
 	}
 	if phase != nil {
@@ -222,6 +256,7 @@ func runDiff(args []string) {
 	full := fs.Bool("full", false, "show full tree (not only diffs)")
 	expand := fs.Bool("expand", false, "expand file list even when uniform preset")
 	fs.BoolVar(expand, "v", false, "alias for --expand")
+	noExtractCover := fs.Bool("no-extract-cover", false, "do not expect embedded cover extraction to cover.jpg")
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
 	}
@@ -232,9 +267,10 @@ func runDiff(args []string) {
 	default:
 		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
 	}
+	defExtract := !*noExtractCover
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] <source_dir> <destination_dir>")
+		fatal("usage: ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])
@@ -274,7 +310,7 @@ func runDiff(args []string) {
 	// Use computeDiff for the heavy lifting (need to count m4a for spinner total before probing, so pre-scan? We'll count after but need m4aTotal for spinner text)
 	// To keep spinner accurate, we still need m4aTotal before probing; computeDiff does probing internally, so we estimate m4aTotal via quick scan or just allow spinner to show probed only.
 	// Instead, we call computeDiff which handles probing and phase updates.
-	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, &scannedSrc, &scannedDst, &probed, &phase)
+	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, &scannedSrc, &scannedDst, &probed, &phase)
 	if err != nil {
 		close(done)
 		fatal(err.Error())
@@ -687,17 +723,22 @@ func printDiffTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 			// Mismatch first (single line with both sides) — third column same line, dynamic statusW
 			for _, expRel := range mismatchFiles {
 				me := mismatch[expRel]
-				srcBase := filepath.Base(me.srcRel)
 				rightFile := filepath.Base(me.actualRel)
-				// Build left: srcBase → dstExt, with ALAC detail if needed
-				dstExt := presetForRel(expRel, sr, defPreset).Ext()
-				srcExt := strings.ToLower(filepath.Ext(srcBase))
-				leftRaw := srcBase + " → " + dstExt
-				if me.preset == PresetAAC || me.preset == PresetMP3 {
-					// Check if src was ALAC with same ext as dst (both .m4a) -> show ALAC detail
-					if strings.EqualFold(srcExt, ".m4a") && strings.EqualFold(dstExt, ".m4a") {
-						if entry, ok := expectedMap[expRel]; ok && entry.detail == "ALAC" {
-							leftRaw = srcBase + " (ALAC) → " + dstExt
+				var leftRaw string
+				if expEntry, ok := expectedMap[expRel]; ok && expEntry.action == "extract-cover" {
+					leftRaw = filepath.Base(expRel) + " (embedded)"
+				} else {
+					srcBase := filepath.Base(me.srcRel)
+					// Build left: srcBase → dstExt, with ALAC detail if needed
+					dstExt := presetForRel(expRel, sr, defPreset).Ext()
+					srcExt := strings.ToLower(filepath.Ext(srcBase))
+					leftRaw = srcBase + " → " + dstExt
+					if me.preset == PresetAAC || me.preset == PresetMP3 {
+						// Check if src was ALAC with same ext as dst (both .m4a) -> show ALAC detail
+						if strings.EqualFold(srcExt, ".m4a") && strings.EqualFold(dstExt, ".m4a") {
+							if entry, ok := expectedMap[expRel]; ok && entry.detail == "ALAC" {
+								leftRaw = srcBase + " (ALAC) → " + dstExt
+							}
 						}
 					}
 				}
@@ -719,16 +760,21 @@ func printDiffTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 			}
 			for _, rel := range missingFiles {
 				entry := missing[rel]
-				srcBase := filepath.Base(entry.srcRel)
-				dstExt := filepath.Ext(rel) // dst ext from expectedRel
-				// For convert, show src → dstExt, for copy just src
-				leftRaw := srcBase
-				if entry.action == "convert" {
-					// Check ALAC same-ext case
-					if entry.detail == "ALAC" && strings.EqualFold(filepath.Ext(srcBase), dstExt) {
-						leftRaw = srcBase + " (ALAC) → " + dstExt
-					} else {
-						leftRaw = srcBase + " → " + dstExt
+				var leftRaw string
+				if entry.action == "extract-cover" {
+					leftRaw = filepath.Base(rel) + " (embedded)"
+				} else {
+					srcBase := filepath.Base(entry.srcRel)
+					dstExt := filepath.Ext(rel) // dst ext from expectedRel
+					// For convert, show src → dstExt, for copy just src
+					leftRaw = srcBase
+					if entry.action == "convert" {
+						// Check ALAC same-ext case
+						if entry.detail == "ALAC" && strings.EqualFold(filepath.Ext(srcBase), dstExt) {
+							leftRaw = srcBase + " (ALAC) → " + dstExt
+						} else {
+							leftRaw = srcBase + " → " + dstExt
+						}
 					}
 				}
 				fBranch := "├── "
