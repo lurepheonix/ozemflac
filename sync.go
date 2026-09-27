@@ -118,15 +118,15 @@ func runSync(args []string) {
 	// JSON output
 	if *jsonOut {
 		type jsonSync struct {
-			Source      string              `json:"source"`
-			Destination string              `json:"destination"`
-			Preset      Preset              `json:"preset"`
-			DryRun      bool                `json:"dryRun"`
-			Added       []string            `json:"added,omitempty"`
-			Replaced    []map[string]string `json:"replaced,omitempty"`
-			Deleted     []string            `json:"deleted,omitempty"`
+			Source       string              `json:"source"`
+			Destination  string              `json:"destination"`
+			Preset       Preset              `json:"preset"`
+			DryRun       bool                `json:"dryRun"`
+			Added        []string            `json:"added,omitempty"`
+			Replaced     []map[string]string `json:"replaced,omitempty"`
+			Deleted      []string            `json:"deleted,omitempty"`
 			KeptMismatch []map[string]string `json:"keptMismatch,omitempty"`
-			KeptExtra   []string            `json:"keptExtra,omitempty"`
+			KeptExtra    []string            `json:"keptExtra,omitempty"`
 		}
 		addedList := sortedKeys(filteredMissing)
 		deletedList := sortedKeys(filteredExtra)
@@ -214,7 +214,7 @@ func runSync(args []string) {
 			return rels[i] < rels[j]
 		})
 		for _, rel := range rels {
-			path := filepath.Join(dstRoot, filepath.FromSlash(rel))
+			path := dstFsPath(dstRoot, rel, dr.actualOnDisk)
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				fmt.Fprintf(os.Stderr, "warning: failed to delete extra %q: %v\n", rel, err)
 				continue
@@ -248,7 +248,7 @@ func runSync(args []string) {
 	// For mismatches, remove old file before conversion
 	if !*keepMismatched {
 		for _, me := range filteredMismatch {
-			path := filepath.Join(dstRoot, filepath.FromSlash(me.actualRel))
+			path := dstFsPath(dstRoot, me.actualRel, dr.actualOnDisk)
 			_ = os.Remove(path)
 		}
 	}
@@ -263,7 +263,10 @@ func runSync(args []string) {
 			jobs = append(jobs, Job{Src: filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel)), Dst: dst, Preset: entry.preset, ExtractCoverDir: entry.srcRel})
 			continue
 		}
-		src := filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel))
+		src := entry.srcAbs
+		if src == "" {
+			src = filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel))
+		}
 		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset, PreserveArt: resolvePreserveArt(sr, dirOfRel(entry.srcRel), defPreserveArt)})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {
@@ -283,7 +286,10 @@ func runSync(args []string) {
 			jobs = append(jobs, Job{Src: filepath.Join(srcRoot, filepath.FromSlash(me.srcRel)), Dst: dst, Preset: entry.preset, ExtractCoverDir: me.srcRel})
 			continue
 		}
-		src := filepath.Join(srcRoot, filepath.FromSlash(me.srcRel))
+		src := me.srcAbs
+		if src == "" {
+			src = filepath.Join(srcRoot, filepath.FromSlash(me.srcRel))
+		}
 		jobs = append(jobs, Job{Src: src, Dst: dst, Preset: entry.preset, PreserveArt: resolvePreserveArt(sr, dirOfRel(me.srcRel), defPreserveArt)})
 		if entry.action == "convert" {
 			if entry.preset == PresetMP3 {

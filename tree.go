@@ -476,7 +476,7 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 		if showAll && len(n.ignoredFiles) > 0 {
 			// Show ignored files inside pruned dir when --all
 			sort.Slice(n.ignoredFiles, func(i, j int) bool {
-				return strings.ToLower(filepath.Base(n.ignoredFiles[i].src)) < strings.ToLower(filepath.Base(n.ignoredFiles[j].src))
+				return strings.ToLower(filepath.Base(n.ignoredFiles[i].rel)) < strings.ToLower(filepath.Base(n.ignoredFiles[j].rel))
 			})
 			igPrefix := prefix
 			if !isLast {
@@ -485,7 +485,7 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 				igPrefix += "    "
 			}
 			for _, c := range n.ignoredFiles {
-				fmt.Printf("%s├── %s %s\n", igPrefix, filepath.Base(c.src), colorize("[ignored]", colorRed, useColor))
+				fmt.Printf("%s├── %s %s\n", igPrefix, filepath.Base(c.rel), colorize("[ignored]", colorRed, useColor))
 			}
 		}
 		return
@@ -606,13 +606,13 @@ func printDirRecursive(n *dirNode, allNodes map[string]*dirNode, actions map[str
 	// Show ignored files if --all
 	if showAll && len(n.ignoredFiles) > 0 {
 		sort.Slice(n.ignoredFiles, func(i, j int) bool {
-			return strings.ToLower(filepath.Base(n.ignoredFiles[i].src)) < strings.ToLower(filepath.Base(n.ignoredFiles[j].src))
+			return strings.ToLower(filepath.Base(n.ignoredFiles[i].rel)) < strings.ToLower(filepath.Base(n.ignoredFiles[j].rel))
 		})
 		for _, c := range n.ignoredFiles {
 			// Find if this is last in combined files+children
 			fBranch := "├── "
 			// Simple
-			fmt.Printf("%s%s%s %s\n", fileBranchPrefix, fBranch, filepath.Base(c.src), colorize("[ignored]", colorRed, useColor))
+			fmt.Printf("%s%s%s %s\n", fileBranchPrefix, fBranch, filepath.Base(c.rel), colorize("[ignored]", colorRed, useColor))
 		}
 	}
 
@@ -715,8 +715,8 @@ func jsonDirFromNode(n *dirNode, all map[string]*dirNode, actions map[string]fil
 	jd.Stats.Ignored = len(n.ignoredFiles)
 	if showAll {
 		for _, c := range n.ignoredFiles {
-			ext := strings.ToLower(filepath.Ext(c.src))
-			jf := jsonFile{Name: filepath.Base(c.src), Rel: c.rel, Ext: ext, Preset: c.preset, Action: "ignored"}
+			ext := strings.ToLower(filepath.Ext(c.rel))
+			jf := jsonFile{Name: filepath.Base(c.rel), Rel: c.rel, Ext: ext, Preset: c.preset, Action: "ignored"}
 			jd.IgnoredFiles = append(jd.IgnoredFiles, jf)
 		}
 	}

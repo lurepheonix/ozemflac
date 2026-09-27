@@ -32,6 +32,7 @@ func termWidth() int {
 type diffEntry struct {
 	rel     string
 	srcRel  string // for expected, src rel; for actual, dst rel (same)
+	srcAbs  string // absolute source path for expected file entries ("" when synthetic)
 	preset  Preset
 	action  string
 	isCover bool
@@ -43,6 +44,10 @@ type diffResult struct {
 	extra    map[string]diffEntry // actualRel -> entry
 	mismatch map[string]mismatchEntry
 	upToDate map[string]diffEntry
+	// actualOnDisk maps a normalized dst rel to the real on-disk rel
+	// (they differ when dst names use NFD spelling while we canonicalize
+	// everything to NFC). Use it for filesystem mutations in sync.
+	actualOnDisk map[string]string
 }
 
 type mismatchEntry struct {
@@ -50,6 +55,7 @@ type mismatchEntry struct {
 	actualRel   string
 	preset      Preset
 	srcRel      string
+	srcAbs      string
 }
 
 type diffNode struct {
@@ -120,8 +126,8 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 		} else {
 			continue
 		}
-		dstRel = filepath.ToSlash(dstRel)
-		expectedMap[dstRel] = diffEntry{rel: dstRel, srcRel: c.rel, preset: c.preset, action: action, isCover: c.isCover, detail: detail}
+		dstRel = normName(filepath.ToSlash(dstRel))
+		expectedMap[dstRel] = diffEntry{rel: dstRel, srcRel: c.rel, srcAbs: c.src, preset: c.preset, action: action, isCover: c.isCover, detail: detail}
 		base := strings.TrimSuffix(dstRel, filepath.Ext(dstRel))
 		// Also base without ext for mismatch detection, but need to handle multiple files with same base different ext? Use first
 		if _, ok := expectedByBase[base]; !ok {
@@ -138,6 +144,7 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 			} else {
 				coverRel = dirRel + "/" + ExtractedCoverName
 			}
+			coverRel = normName(coverRel)
 			if _, ok := expectedMap[coverRel]; ok {
 				continue
 			}
@@ -168,6 +175,7 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 	// Scan dst
 	actualMap := make(map[string]diffEntry)
 	actualByBase := make(map[string]string)
+	actualOnDisk := make(map[string]string)
 	dstScanned := 0
 	err = filepath.WalkDir(dstRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -183,12 +191,16 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
+		onDiskRel := filepath.ToSlash(rel)
+		rel = normName(onDiskRel)
 		dstScanned++
 		if scannedDst != nil && dstScanned%50 == 0 {
 			scannedDst.Store(int64(dstScanned))
 		}
 		actualMap[rel] = diffEntry{rel: rel, srcRel: rel}
+		if _, ok := actualOnDisk[rel]; !ok {
+			actualOnDisk[rel] = onDiskRel
+		}
 		base := strings.TrimSuffix(rel, filepath.Ext(rel))
 		if _, ok := actualByBase[base]; !ok {
 			actualByBase[base] = rel
@@ -214,7 +226,7 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 			base := strings.TrimSuffix(expRel, filepath.Ext(expRel))
 			if actRel, ok2 := actualByBase[base]; ok2 && actRel != expRel {
 				// Mismatch
-				mismatch[expRel] = mismatchEntry{expectedRel: expRel, actualRel: actRel, preset: expEntry.preset, srcRel: expEntry.srcRel}
+				mismatch[expRel] = mismatchEntry{expectedRel: expRel, actualRel: actRel, preset: expEntry.preset, srcRel: expEntry.srcRel, srcAbs: expEntry.srcAbs}
 			} else {
 				missing[expRel] = expEntry
 			}
@@ -240,10 +252,11 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 	}
 
 	dr := &diffResult{
-		missing:  missing,
-		extra:    extra,
-		mismatch: mismatch,
-		upToDate: upToDate,
+		missing:      missing,
+		extra:        extra,
+		mismatch:     mismatch,
+		upToDate:     upToDate,
+		actualOnDisk: actualOnDisk,
 	}
 	return sr, expectedMap, actualMap, dr, nil
 }
@@ -887,7 +900,7 @@ func sortedDiffDirNames(n *diffNode) []string {
 }
 
 func presetForRel(rel string, sr *scanResult, defPreset Preset) Preset {
-	dirRel := filepath.ToSlash(filepath.Dir(rel))
+	dirRel := normName(filepath.ToSlash(filepath.Dir(rel)))
 	if dirRel == "" {
 		dirRel = "."
 	}

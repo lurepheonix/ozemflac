@@ -399,7 +399,7 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 			if relDir == "." {
 				relDir = "."
 			} else {
-				relDir = filepath.ToSlash(relDir)
+				relDir = normName(filepath.ToSlash(relDir))
 			}
 			if !seenDirs[relDir] {
 				seenDirs[relDir] = true
@@ -418,7 +418,7 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 					if strings.HasPrefix(s, "#") || len(strings.TrimSpace(s)) == 0 {
 						continue
 					}
-					ps = append(ps, gitignore.ParsePattern(s, domain))
+					ps = append(ps, gitignore.ParsePattern(normName(s), domain))
 				}
 				if len(ps) > 0 {
 					dirPatterns[relDir] = ps
@@ -469,8 +469,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 		if err != nil {
 			return err
 		}
-		relSlash := filepath.ToSlash(rel)
-		dirRel := filepath.ToSlash(filepath.Dir(rel))
+		relSlash := normName(filepath.ToSlash(rel))
+		dirRel := normName(filepath.ToSlash(filepath.Dir(rel)))
 		if dirRel == "." && filepath.Dir(rel) == "." {
 			dirRel = "."
 		}
@@ -670,12 +670,12 @@ func fatal(msg string) {
 
 // ozemrc holds parsed per-folder settings from .ozemrc.
 type ozemrc struct {
-	preset           Preset
-	hasPreset        bool
-	extractCover     bool
-	hasExtractCover  bool
-	preserveArt      bool
-	hasPreserveArt   bool
+	preset          Preset
+	hasPreset       bool
+	extractCover    bool
+	hasExtractCover bool
+	preserveArt     bool
+	hasPreserveArt  bool
 }
 
 func parseBoolOzemrc(val string) (bool, bool) {
@@ -759,7 +759,7 @@ func ancestorsOf(dir string) []string {
 
 // dirOfRel returns the slash-form dir of a slash-form file rel ("." for top level).
 func dirOfRel(rel string) string {
-	dir := filepath.ToSlash(filepath.Dir(rel))
+	dir := normName(filepath.ToSlash(filepath.Dir(rel)))
 	if dir == "" {
 		dir = "."
 	}
