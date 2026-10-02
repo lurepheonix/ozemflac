@@ -29,6 +29,7 @@ func runSync(args []string) {
 	workers := fs.Int("workers", 0, "number of parallel workers (0 = auto)")
 	noExtractCover := fs.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
 	preserveArtFlag := fs.Bool("preserve-embedded-art", false, "keep embedded cover art in converted files")
+	nomediaFlag := fs.Bool("nomedia", false, "create empty .nomedia in destination root to hide covers from Android Gallery")
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
 	}
@@ -41,12 +42,13 @@ func runSync(args []string) {
 	}
 	defExtract := !*noExtractCover
 	defPreserveArt := *preserveArtFlag
+	defNomedia := *nomediaFlag
 	if *workers < 0 {
 		fatal("workers must be >= 0")
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>")
+		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])
@@ -92,7 +94,7 @@ func runSync(args []string) {
 		}, done, useColorSpinner)
 	}
 
-	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, &scannedSrc, &scannedDst, &probed, &phase)
+	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, defNomedia, &scannedSrc, &scannedDst, &probed, &phase)
 	if err != nil {
 		close(done)
 		fatal(err.Error())
@@ -253,11 +255,15 @@ func runSync(args []string) {
 		}
 	}
 
-	// Build jobs for missing + mismatch
+	// Build jobs for missing + mismatch (.nomedia handled separately via ensureNomedia)
+	_, needNomedia := filteredMissing[NomediaName]
 	var jobs []Job
 	needAAC := false
 	needMP3 := false
 	for rel, entry := range filteredMissing {
+		if rel == NomediaName && entry.action == "nomedia" {
+			continue
+		}
 		dst := filepath.Join(dstRoot, filepath.FromSlash(rel))
 		if entry.action == "extract-cover" {
 			jobs = append(jobs, Job{Src: filepath.Join(srcRoot, filepath.FromSlash(entry.srcRel)), Dst: dst, Preset: entry.preset, ExtractCoverDir: entry.srcRel})
@@ -399,6 +405,17 @@ func runSync(args []string) {
 		wg.Wait()
 		close(doneChan)
 		printerWg.Wait()
+	}
+
+	// Create .nomedia flag when expected (strict: missing entry means enabled)
+	if needNomedia {
+		if err := ensureNomedia(dstRoot); err != nil {
+			failed++
+			failedFiles = append(failedFiles, fmt.Sprintf("%s: %v", NomediaName, err))
+			fmt.Fprintf(os.Stderr, "error creating %s: %v\n", NomediaName, err)
+		} else if !*jsonOut {
+			fmt.Println("Created .nomedia")
+		}
 	}
 
 	if !*jsonOut {
@@ -839,6 +856,8 @@ func printSyncTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 			var leftRaw string
 			if entry.action == "extract-cover" {
 				leftRaw = filepath.Base(rel) + " (embedded)"
+			} else if entry.action == "nomedia" {
+				leftRaw = NomediaName
 			} else {
 				srcBase := filepath.Base(entry.srcRel)
 				dstExt := filepath.Ext(rel)
@@ -929,12 +948,9 @@ func printSyncTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 	if !ok {
 		return
 	}
-	sortedRoot := sortedDiffDirNames(root)
-	for i, name := range sortedRoot {
-		child := nodes[name]
-		isLast := i == len(sortedRoot)-1
-		printDir(child, "", isLast, 1)
-	}
+	// Print from root (its own dir line is skipped, but root-level files
+	// such as .nomedia must still be shown)
+	printDir(root, "", true, 0)
 	// Summary for sync
 	totalAdded := len(missing)
 	totalReplaced := len(mismatch)

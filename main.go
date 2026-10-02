@@ -102,6 +102,8 @@ type scanResult struct {
 	dirHasExtractCover   map[string]bool
 	dirPreserveArt       map[string]bool
 	dirHasPreserveArt    map[string]bool
+	dirNomedia           map[string]bool
+	dirHasNomedia        map[string]bool
 	allDirs              []string
 	dirHasMusicCandidate map[string]bool
 	subtreeHasMusic      map[string]bool
@@ -127,9 +129,11 @@ func main() {
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	noExtractCover := flag.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
 	preserveArt := flag.Bool("preserve-embedded-art", false, "keep embedded cover art in converted files")
+	nomediaFlag := flag.Bool("nomedia", false, "create empty .nomedia in destination root to hide covers from Android Gallery")
 	flag.Parse()
 	defExtract := !*noExtractCover
 	defPreserveArt := *preserveArt
+	defNomedia := *nomediaFlag
 
 	// Strict lower-case validation, show available presets
 	switch Preset(*presetFlag) {
@@ -141,7 +145,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
@@ -244,6 +248,13 @@ func main() {
 	total := len(jobs)
 	if total == 0 {
 		fmt.Println("No files to process")
+		if resolveNomedia(sr, ".", defNomedia) {
+			if err := ensureNomedia(dstRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not create .nomedia: %v\n", err)
+			} else {
+				fmt.Println("Created .nomedia")
+			}
+		}
 		return
 	}
 	fmt.Printf("Found %d files to process\n", total)
@@ -356,6 +367,13 @@ func main() {
 	if len(extractFailed) > 0 {
 		fmt.Fprintf(os.Stderr, "%d cover(s) could not be extracted (source has no usable embedded art or ffmpeg failed)\n", len(extractFailed))
 	}
+	if resolveNomedia(sr, ".", defNomedia) {
+		if err := ensureNomedia(dstRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not create .nomedia: %v\n", err)
+		} else {
+			fmt.Println("Created .nomedia")
+		}
+	}
 }
 
 // hasEmbeddedArtForDir reports whether any music file in dir has embedded art.
@@ -378,6 +396,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 	dirHasExtractCover := make(map[string]bool)
 	dirPreserveArt := make(map[string]bool)
 	dirHasPreserveArt := make(map[string]bool)
+	dirNomedia := make(map[string]bool)
+	dirHasNomedia := make(map[string]bool)
 	var candidates []candidate
 	var ignoredFiles []candidate
 	dirHasMusicCandidate := make(map[string]bool)
@@ -442,6 +462,10 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 				if rc.hasPreserveArt {
 					dirPreserveArt[relDir] = rc.preserveArt
 					dirHasPreserveArt[relDir] = true
+				}
+				if rc.hasNomedia {
+					dirNomedia[relDir] = rc.nomedia
+					dirHasNomedia[relDir] = true
 				}
 			}
 			return nil
@@ -557,6 +581,8 @@ func scanSource(srcRoot string, defPreset Preset, onProgress func(int)) (*scanRe
 		dirHasExtractCover:   dirHasExtractCover,
 		dirPreserveArt:       dirPreserveArt,
 		dirHasPreserveArt:    dirHasPreserveArt,
+		dirNomedia:           dirNomedia,
+		dirHasNomedia:        dirHasNomedia,
 		allDirs:              allDirs,
 		dirHasMusicCandidate: dirHasMusicCandidate,
 		subtreeHasMusic:      subtreeHasMusic,
@@ -676,6 +702,8 @@ type ozemrc struct {
 	hasExtractCover bool
 	preserveArt     bool
 	hasPreserveArt  bool
+	nomedia         bool
+	hasNomedia      bool
 }
 
 func parseBoolOzemrc(val string) (bool, bool) {
@@ -726,6 +754,13 @@ func parseOzemrc(content string, dirPath string) (ozemrc, error) {
 			}
 			rc.preserveArt = b
 			rc.hasPreserveArt = true
+		} else if key == "nomedia" {
+			b, ok := parseBoolOzemrc(val)
+			if !ok {
+				return ozemrc{}, fmt.Errorf("invalid nomedia %q in %s: expected true/false", val, filepath.Join(dirPath, ".ozemrc"))
+			}
+			rc.nomedia = b
+			rc.hasNomedia = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -800,6 +835,57 @@ func effectivePreserveArtFor(dirRel string, dirVals map[string]bool, dirHas map[
 		}
 	}
 	return def
+}
+
+// NomediaName is the Android media-scanner opt-out flag file created in the
+// destination root when nomedia is enabled. It hides cover art from Gallery.
+const NomediaName = ".nomedia"
+
+// effectiveNomediaFor returns nearest ancestor nomedia else default (false).
+func effectiveNomediaFor(dirRel string, dirVals map[string]bool, dirHas map[string]bool, def bool) bool {
+	ancestors := ancestorsOf(dirRel)
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		anc := ancestors[i]
+		if dirHas[anc] {
+			return dirVals[anc]
+		}
+	}
+	return def
+}
+
+// resolveNomedia reports whether dst root should contain a .nomedia flag.
+// defNomedia (true with --nomedia) is only the default: the nearest
+// per-folder .ozemrc nomedia setting for the source root wins when present.
+func resolveNomedia(sr *scanResult, dirRel string, defNomedia bool) bool {
+	if sr == nil {
+		return defNomedia
+	}
+	return effectiveNomediaFor(dirRel, sr.dirNomedia, sr.dirHasNomedia, defNomedia)
+}
+
+// ensureNomedia creates an empty dstRoot/.nomedia file if missing.
+// Existing files (even non-empty) are left untouched.
+func ensureNomedia(dstRoot string) error {
+	path := filepath.Join(dstRoot, NomediaName)
+	if st, err := os.Stat(path); err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("%q exists and is a directory", path)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(dstRoot, 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	return f.Close()
 }
 
 // resolvePreserveArt reports whether converted files in dirRel should keep

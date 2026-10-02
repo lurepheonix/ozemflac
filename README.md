@@ -22,7 +22,7 @@ Converted files keep the source metadata and original base name with the preset 
 ### `ozemflac` (convert)
 
 ```
-ozemflac [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>
+ozemflac [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>
 ```
 
 Copies/converts the whole source tree to a new or empty destination. Fails if destination exists and is not empty, or if source and destination are the same.
@@ -33,6 +33,7 @@ Copies/converts the whole source tree to a new or empty destination. Fails if de
 | `-workers`                | `0` (auto `runtime.NumCPU()/2`, min 1) | Parallel conversion workers.                                                                                                                                                                                   |
 | `--no-extract-cover`      | `false` (extraction enabled)  | When set, do not extract embedded cover art by default. Otherwise dirs with music but no cover file get `cover.jpg` extracted from the first music file with embedded art. Per-folder `.ozemrc` (`extract_cover = true \| false`) overrides the flag, inherited via ancestors. |
 | `--preserve-embedded-art` | `false` (art stripped)        | When set, converted files keep the source attached picture by default (`ffmpeg -map 0:v? -c:v copy -disposition:v attached_pic`; on macOS applied in the `ffmpeg` metadata pass after `afconvert`). Otherwise transcodes map audio only and drop embedded art. Per-folder `.ozemrc` (`preserve_embedded_art = true \| false`) overrides the flag, inherited via ancestors. |
+| `--nomedia`               | `false` (no `.nomedia`)       | When set, create an empty `.nomedia` flag in the destination root to hide covers from the Android Gallery/media scanner. Per-folder `.ozemrc` (`nomedia = true \| false`) overrides the flag (root value wins), inherited via ancestors. |
 
 Behavior: `scanSource` collects candidates (`losslessExt`, `lossyExt`, `coverFiles: cover.jpg/folder.jpg/cover.png/folder.png`, `.m4a` probed with `ffprobe -select_streams a:0 -show_entries stream=codec_name` → `alac` ? convert : copy). Covers skipped if `subtreeHasMusic[dir]==false`. Progress bar `█/-` with percent. Cover extraction: after music jobs, each coverless music dir with `extract_cover` enabled is probed (`ffprobe -select_streams v`) and extracted via `ffmpeg -map 0:v:0 -frames:v 1 cover.jpg` (sorted music files, first success wins; dirs without embedded art are silently skipped, failures are warnings). `--preserve-embedded-art` is independent of extraction (both can be on); plain copies always preserve embedded art.
 
@@ -57,7 +58,7 @@ Root line: `<src> [preset: aac → .m4a (default|via .ozemrc|inherited)] [ignore
 ### `ozemflac diff`
 
 ```
-ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>
+ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>
 ```
 
 Two-column `SRC | DST [status]` adaptive view (`COLUMNS` or `TIOCGWINSZ` else 80, truncated with `…`, padded via `go-runewidth`). Compares expected dst (preset-aware, ALAC probing, plus expected `cover.jpg` extraction) against actual dst on disk.
@@ -76,14 +77,15 @@ Statuses (third column, same line, dynamic width `statusW`):
 | `--json`           | `false` | JSON `{source,destination,preset,missing[],extra[],mismatch[{expected,actual,src}],upToDate[]}` (when `--full`). |
 | `--full`           | `false` | Show full tree including `upToDate` files, not only diffs.                                                       |
 | `--expand` / `-v`  | `false` | Expand file lists in `--full` mode even when uniform.                                                            |
-| `--no-extract-cover` | `false` | Do not expect `cover.jpg` extraction. Per-folder `.ozemrc` (`extract_cover`) still applies otherwise.          |
+| `--no-extract-cover` | `false` | Do not expect `cover.jpg` extraction. Per-folder `.ozemrc` (`extract_cover`) still applies otherwise.                                              |
+| `--nomedia` | `false` | Expect `.nomedia` in the destination root. Strict: when off, a stray dst `.nomedia` is `[extra]` (removed by `sync --delete-extra`); when on, a missing one is `[missing]`. Per-folder `.ozemrc` (`nomedia`) still applies otherwise. |
 
 Spinner phases: `scanning src` → `probing .m4a` → `scanning dst`.
 
 ### `ozemflac sync`
 
 ```
-ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] <source_dir> <destination_dir>
+ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>
 ```
 
 `diff` + apply. By default adds `missing` (including extracted `cover.jpg`) and replaces `mismatch`; keeps `extra`. After a real run prints a collapsed change view (whole folder replaced → single `album/ [preset:aac, synced N files] [synced]` line).
@@ -101,7 +103,8 @@ ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatche
 | `--expand` / `-v`    | `false` | Expand uniform-preset file lists in the result view.                                                                                                     |
 | `--no-extract-cover` | `false` | Do not add expected/extracted `cover.jpg`. Per-folder `.ozemrc` (`extract_cover`) still applies otherwise.                                              |
 | `--preserve-embedded-art` | `false` | Keep embedded cover art in converted files (same semantics as `convert`). Per-folder `.ozemrc` (`preserve_embedded_art`) overrides the flag. |
+| `--nomedia` | `false` | Create `.nomedia` in the destination root (same semantics as `convert`). Strict: with `--delete-extra` and nomedia disabled, a stray dst `.nomedia` is deleted. Per-folder `.ozemrc` (`nomedia`) overrides the flag. |
 
 Execution order: `extra` deletions (deepest first) → `mismatch` old-file removal → `missing` + `mismatch` jobs via `processFile` (same tmp→rename safety as `convert`; `extract-cover` jobs run `ffmpeg -map 0:v:0 -frames:v 1 cover.jpg` via tmp+rename). Progress bar and `Done!`/`Done with N error(s)` match `convert`. Collapsing rule: if for a directory `synced == totalExpectedInSubtree` and no `upToDate` remains (and no undeleted extra in subtree), the directory is printed once as `[synced]` instead of per-file lines.
 
-Per-folder `.ozemrc` may contain `extract_cover = true|false` (inherited via ancestors, default `true`); `--no-extract-cover` only changes the default, a nearer `.ozemrc` still wins per-dir. It may also contain `preserve_embedded_art = true|false` (inherited via ancestors, default `false`); `--preserve-embedded-art` only changes the default, a nearer `.ozemrc` still wins per-dir.
+Per-folder `.ozemrc` may contain `extract_cover = true|false` (inherited via ancestors, default `true`); `--no-extract-cover` only changes the default, a nearer `.ozemrc` still wins per-dir. It may also contain `preserve_embedded_art = true|false` (inherited via ancestors, default `false`); `--preserve-embedded-art` only changes the default, a nearer `.ozemrc` still wins per-dir. It may also contain `nomedia = true|false` (inherited via ancestors, default `false`); `--nomedia` only changes the default, a nearer `.ozemrc` still wins (only the root value matters since `.nomedia` is created in the destination root).

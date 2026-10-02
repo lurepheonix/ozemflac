@@ -66,7 +66,7 @@ type diffNode struct {
 // computeDiff performs the full diff between src and dst, reusing the same logic as diff.
 // It handles scanning src (with isALAC probing), scanning dst, and building missing/mismatch/extra sets.
 // The caller may provide atomic counters and phase for spinner progress (or nil to skip).
-func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, scannedSrc, scannedDst, probed *atomic.Int64, phase *atomic.Value) (*scanResult, map[string]diffEntry, map[string]diffEntry, *diffResult, error) {
+func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, defNomedia bool, scannedSrc, scannedDst, probed *atomic.Int64, phase *atomic.Value) (*scanResult, map[string]diffEntry, map[string]diffEntry, *diffResult, error) {
 	// Scan src
 	sr, err := scanSource(srcRoot, defPreset, func(n int) {
 		if scannedSrc != nil {
@@ -167,6 +167,13 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, sca
 			if _, ok := expectedByBase[base]; !ok {
 				expectedByBase[base] = coverRel
 			}
+		}
+	}
+	// Expected .nomedia flag in dst root (strict: missing when enabled,
+	// extra when disabled and present on disk).
+	if resolveNomedia(sr, ".", defNomedia) {
+		if _, ok := expectedMap[NomediaName]; !ok {
+			expectedMap[NomediaName] = diffEntry{rel: NomediaName, srcRel: ".", preset: defPreset, action: "nomedia", detail: "nomedia"}
 		}
 	}
 	if phase != nil {
@@ -270,6 +277,7 @@ func runDiff(args []string) {
 	expand := fs.Bool("expand", false, "expand file list even when uniform preset")
 	fs.BoolVar(expand, "v", false, "alias for --expand")
 	noExtractCover := fs.Bool("no-extract-cover", false, "do not expect embedded cover extraction to cover.jpg")
+	nomediaFlag := fs.Bool("nomedia", false, "expect .nomedia flag in destination root")
 	if err := fs.Parse(args); err != nil {
 		fatal(err.Error())
 	}
@@ -281,9 +289,10 @@ func runDiff(args []string) {
 		fatal("invalid -preset \"" + *presetFlag + "\": available presets: aac, mp3")
 	}
 	defExtract := !*noExtractCover
+	defNomedia := *nomediaFlag
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir> <destination_dir>")
+		fatal("usage: ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])
@@ -323,7 +332,7 @@ func runDiff(args []string) {
 	// Use computeDiff for the heavy lifting (need to count m4a for spinner total before probing, so pre-scan? We'll count after but need m4aTotal for spinner text)
 	// To keep spinner accurate, we still need m4aTotal before probing; computeDiff does probing internally, so we estimate m4aTotal via quick scan or just allow spinner to show probed only.
 	// Instead, we call computeDiff which handles probing and phase updates.
-	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, &scannedSrc, &scannedDst, &probed, &phase)
+	sr, expectedMap, actualMap, dr, err := computeDiff(srcRoot, dstRoot, defPreset, defExtract, defNomedia, &scannedSrc, &scannedDst, &probed, &phase)
 	if err != nil {
 		close(done)
 		fatal(err.Error())
@@ -776,6 +785,8 @@ func printDiffTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 				var leftRaw string
 				if entry.action == "extract-cover" {
 					leftRaw = filepath.Base(rel) + " (embedded)"
+				} else if entry.action == "nomedia" {
+					leftRaw = NomediaName
 				} else {
 					srcBase := filepath.Base(entry.srcRel)
 					dstExt := filepath.Ext(rel) // dst ext from expectedRel
@@ -868,17 +879,13 @@ func printDiffTree(srcRoot, dstRoot string, sr *scanResult, expectedMap, actualM
 			printDir(child, prefix, isLastChild, depth+1)
 		}
 	}
-	// Start from root children
+	// Start from root (its own dir line is skipped, but root-level files
+	// such as .nomedia must still be shown)
 	root, ok := nodes["."]
 	if !ok {
 		return
 	}
-	sortedRoot := sortedDiffDirNames(root)
-	for i, name := range sortedRoot {
-		child := nodes[name]
-		isLast := i == len(sortedRoot)-1
-		printDir(child, "", isLast, 1)
-	}
+	printDir(root, "", true, 0)
 	// Summary
 	totalMissing := len(missing)
 	totalExtra := len(extra)
