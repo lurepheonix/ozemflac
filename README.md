@@ -55,6 +55,22 @@ Shows the source tree with effective preset, pruned/ignored info. No destination
 
 Root line: `<src> [preset: aac → .m4a (default|via .ozemrc|inherited)] [ignores:N]`. Dir lines include `pruned (.ozemignore|empty)` and `music:X covers:Y`.
 
+### `ozemflac covers`
+
+```
+ozemflac covers [--all] [--json] [--no-extract-cover] <source_dir>
+```
+
+Lists source album dirs with music where `sync`/`convert` cannot provide a cover: no cover file (`cover.jpg/folder.jpg/cover.png/folder.png`) and no usable embedded art. Dirs with a cover file (`ok — cover file`) or extractable art (`ok — embedded → cover.jpg`) count as ok.
+
+| Flag               | Default | Description                                                                                                      |
+| ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--all`            | `false` | Also show `ok` dirs; by default only `[missing]` dirs are listed.                                                |
+| `--json`           | `false` | JSON `{source, missing[{dir,reason}], ok[{dir,source}]}` (`ok` only with `--all`). Reasons: `no_cover_no_embedded`, `extraction_disabled`. Disables spinner/color. |
+| `--no-extract-cover` | `false` | Do not consider embedded extraction; per-folder `.ozemrc` (`extract_cover`) still wins per-dir. |
+
+Missing reasons: `no cover file, no embedded art` (needs a manual `cover.jpg`) vs `extraction disabled, no cover file` (enable extraction or add a file). Pruned/ignored dirs without music are skipped. Requires `ffprobe` in `$PATH` when any dir needs embedded-art probing.
+
 ### `ozemflac diff`
 
 ```
