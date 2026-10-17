@@ -149,7 +149,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac covers [--all] [--json] [--no-extract-cover] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
+		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac covers [--all] [--json] [--no-extract-cover] [--preserve-embedded-art] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
 	}
 
 	srcRoot := filepath.Clean(args[0])
