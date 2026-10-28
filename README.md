@@ -72,6 +72,23 @@ Lists source album dirs where artwork cannot reach the destination. Dirs with a 
 
 Missing reasons: `no cover file, no embedded art` (needs a manual `cover.jpg`) vs `embedded art will be stripped` (convertible files with both extraction and preservation off — enable one). An explicit `extract_cover=false` opt-out is not missing: with art kept in files the dir is reported per-track instead. Pruned/ignored dirs without music are skipped. Requires `ffprobe` in `$PATH` when any coverless music dir needs embedded-art probing.
 
+### `ozemflac short`
+
+```
+ozemflac short [--all] [--json] --under <seconds> [--over <seconds>] <source_dir>
+```
+
+Lists tracks inside the duration window (inclusive on both ends: `over <= duration <= under`), grouped by album dir like `covers`. Without `--over`, lists everything at or under `--under`. E.g. after handling `<=60s` files, `--under 90 --over 61` checks the 61–90s band. Durations probed via `ffprobe` (`format=duration`) and displayed as `M:SS` (`0:05`, `1:00`).
+
+| Flag               | Default | Description                                                                                                      |
+| ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--under`          | — (required) | Upper duration bound in seconds, inclusive. Must be `> 0`; fractional values allowed (e.g. `5.5`).        |
+| `--over`           | — (unset) | Lower duration bound in seconds, inclusive. Must be `>= 0` and `<= --under` (equal matches one exact duration). |
+| `--all`            | `false` | Also show `ok` dirs; by default only dirs with matching tracks are listed.                                       |
+| `--json`           | `false` | JSON `{source, thresholdSec, overSec?, short[{dir,short,total,tracks[{rel,duration}]}], ok[{dir,total}]}` (`ok` only with `--all`, `overSec` only with `--over`). Disables spinner/color. |
+
+Pruned/ignored dirs without music are skipped. Requires `ffprobe` in `$PATH`.
+
 ### `ozemflac diff`
 
 ```
