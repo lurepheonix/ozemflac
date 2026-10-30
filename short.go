@@ -41,7 +41,12 @@ func (r shortDirResult) shortList() []shortTrackResult {
 }
 
 func runShort(args []string) {
+	if hasHelpFlag(args) {
+		printShortUsage(os.Stdout)
+		return
+	}
 	fs := flag.NewFlagSet("short", flag.ExitOnError)
+	fs.Usage = func() { printShortUsage(os.Stderr) }
 	showAll := fs.Bool("all", false, "show dirs without short tracks in addition to matches")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	under := fs.Float64("under", 0, "upper duration bound in seconds (tracks with duration <= under are listed)")
@@ -50,7 +55,7 @@ func runShort(args []string) {
 		fatal(err.Error())
 	}
 	if *under <= 0 {
-		fatal("usage: ozemflac short [--all] [--json] --under <seconds> [--over <seconds>] <source_dir>")
+		printUsageErrorAndExit("short", "missing required --under <seconds>.")
 	}
 	if *over < 0 {
 		fatal("--over must be >= 0")
@@ -62,7 +67,7 @@ func runShort(args []string) {
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fatal("usage: ozemflac short [--all] [--json] --under <seconds> [--over <seconds>] <source_dir>")
+		printUsageErrorAndExit("short", "missing required arguments.")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	if info, err := os.Stat(srcRoot); err != nil {

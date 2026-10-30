@@ -16,7 +16,12 @@ import (
 )
 
 func runSync(args []string) {
+	if hasHelpFlag(args) {
+		printSyncUsage(os.Stdout)
+		return
+	}
 	fs := flag.NewFlagSet("sync", flag.ExitOnError)
+	fs.Usage = func() { printSyncUsage(os.Stderr) }
 	presetFlag := fs.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	showAll := fs.Bool("all", false, "show ignored files")
 	jsonOut := fs.Bool("json", false, "output JSON")
@@ -48,7 +53,7 @@ func runSync(args []string) {
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
+		printUsageErrorAndExit("sync", "missing required arguments.")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])

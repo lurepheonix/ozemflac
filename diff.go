@@ -269,7 +269,12 @@ func computeDiff(srcRoot, dstRoot string, defPreset Preset, defExtract bool, def
 }
 
 func runDiff(args []string) {
+	if hasHelpFlag(args) {
+		printDiffUsage(os.Stdout)
+		return
+	}
 	fs := flag.NewFlagSet("diff", flag.ExitOnError)
+	fs.Usage = func() { printDiffUsage(os.Stderr) }
 	presetFlag := fs.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	showAll := fs.Bool("all", false, "show ignored files")
 	jsonOut := fs.Bool("json", false, "output JSON")
@@ -292,7 +297,7 @@ func runDiff(args []string) {
 	defNomedia := *nomediaFlag
 	rest := fs.Args()
 	if len(rest) != 2 {
-		fatal("usage: ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>")
+		printUsageErrorAndExit("diff", "missing required arguments.")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	dstRoot := filepath.Clean(rest[1])

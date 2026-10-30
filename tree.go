@@ -30,7 +30,12 @@ func colorize(s, code string, useColor bool) string {
 }
 
 func runTree(args []string) {
+	if hasHelpFlag(args) {
+		printTreeUsage(os.Stdout)
+		return
+	}
 	fs := flag.NewFlagSet("tree", flag.ExitOnError)
+	fs.Usage = func() { printTreeUsage(os.Stderr) }
 	presetFlag := fs.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	showAll := fs.Bool("all", false, "show ignored files")
 	jsonOut := fs.Bool("json", false, "output JSON")
@@ -53,7 +58,7 @@ func runTree(args []string) {
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fatal("usage: ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>")
+		printUsageErrorAndExit("tree", "missing required arguments.")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	if info, err := os.Stat(srcRoot); err != nil {

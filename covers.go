@@ -48,7 +48,12 @@ func (r coverDirResult) artless() []string {
 }
 
 func runCovers(args []string) {
+	if hasHelpFlag(args) {
+		printCoversUsage(os.Stdout)
+		return
+	}
 	fs := flag.NewFlagSet("covers", flag.ExitOnError)
+	fs.Usage = func() { printCoversUsage(os.Stderr) }
 	showAll := fs.Bool("all", false, "show dirs with covers in addition to missing")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	noExtractCover := fs.Bool("no-extract-cover", false, "do not consider embedded cover extraction")
@@ -61,7 +66,7 @@ func runCovers(args []string) {
 
 	rest := fs.Args()
 	if len(rest) != 1 {
-		fatal("usage: ozemflac covers [--all] [--json] [--no-extract-cover] [--preserve-embedded-art] <source_dir>")
+		printUsageErrorAndExit("covers", "missing required arguments.")
 	}
 	srcRoot := filepath.Clean(rest[0])
 	if info, err := os.Stat(srcRoot); err != nil {

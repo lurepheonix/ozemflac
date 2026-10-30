@@ -112,6 +112,30 @@ type scanResult struct {
 }
 
 func main() {
+	// Top-level help: ozemflac --help, ozemflac -h, ozemflac help [command]
+	if len(os.Args) > 1 && (os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
+		if len(os.Args) > 2 && printCommandUsage(os.Args[2], os.Stdout) {
+			return
+		}
+		printTopUsage(os.Stdout)
+		return
+	}
+	if len(os.Args) == 1 {
+		printTopError()
+		os.Exit(1)
+	}
+	// Explicit convert alias: ozemflac convert ... behaves like bare convert.
+	isConvertAlias := len(os.Args) > 1 && os.Args[1] == "convert"
+	if isConvertAlias {
+		if hasHelpFlag(os.Args[2:]) {
+			printConvertUsage(os.Stdout)
+			return
+		}
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		if len(os.Args) == 1 {
+			printUsageErrorAndExit("convert", "missing required arguments.")
+		}
+	}
 	if len(os.Args) > 1 && os.Args[1] == "tree" {
 		runTree(os.Args[2:])
 		return
@@ -132,7 +156,27 @@ func main() {
 		runSync(os.Args[2:])
 		return
 	}
+	// Unknown subcommand (bare convert flags start with '-').
+	// Bare convert positionals are paths: if the token looks like a path
+	// (contains '/' or '.', or exists on disk), fall through to convert.
+	if !isConvertAlias && len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		tok := os.Args[1]
+		isPath := strings.Contains(tok, "/") || strings.Contains(tok, ".") || tok == "." || tok == ".."
+		if _, err := os.Stat(tok); err == nil {
+			isPath = true
+		}
+		if !isPath {
+			printUnknownCommand(tok)
+			os.Exit(1)
+		}
+	}
+	// Bare convert --help shows top usage (covers convert too).
+	if hasHelpFlag(os.Args[1:]) {
+		printTopUsage(os.Stdout)
+		return
+	}
 
+	flag.Usage = func() { printConvertUsage(os.Stderr) }
 	workers := flag.Int("workers", 0, "number of parallel workers")
 	presetFlag := flag.String("preset", "aac", "output preset: aac or mp3 (available presets: aac, mp3)")
 	noExtractCover := flag.Bool("no-extract-cover", false, "do not extract embedded cover art to cover.jpg when destination dir has no cover")
@@ -153,7 +197,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) != 2 {
-		fatal("usage: converter [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir> (available presets: aac, mp3)\n       ozemflac tree [--all] [--json] [--expand] [-preset aac|mp3] [--no-extract-cover] <source_dir>\n       ozemflac covers [--all] [--json] [--no-extract-cover] [--preserve-embedded-art] <source_dir>\n       ozemflac short [--all] [--json] --under <seconds> [--over <seconds>] <source_dir>\n       ozemflac diff [--all] [--json] [--full] [--expand] [-preset aac|mp3] [--no-extract-cover] [--nomedia] <source_dir> <destination_dir>\n       ozemflac sync [--all] [--json] [--full] [--expand] [--dry-run] [--keep-mismatched] [--delete-extra] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>")
+		printUsageErrorAndExit("convert", "missing required arguments.")
 	}
 
 	srcRoot := filepath.Clean(args[0])

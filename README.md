@@ -19,11 +19,13 @@ Converted files keep the source metadata and original base name with the preset 
 
 ## Commands
 
-### `ozemflac` (convert)
+### `ozemflac convert` (default)
 
 ```
-ozemflac [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>
+ozemflac [convert] [-workers N] [-preset aac|mp3] [--no-extract-cover] [--preserve-embedded-art] [--nomedia] <source_dir> <destination_dir>
 ```
+
+Called without a command, `ozemflac` runs `convert`. `ozemflac convert --help` shows convert help; `ozemflac --help` and `ozemflac help <command>` show top-level and per-command help.
 
 Copies/converts the whole source tree to a new or empty destination. Fails if destination exists and is not empty, or if source and destination are the same.
 
