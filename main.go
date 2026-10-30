@@ -24,6 +24,9 @@ var (
 		".wav":  true,
 		".aif":  true,
 		".aiff": true,
+		".ape":  true,
+		".wv":   true,
+		".tta":  true,
 	}
 
 	lossyExt = map[string]bool{

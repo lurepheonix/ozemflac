@@ -3,11 +3,21 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// afconvertExoticExt lists lossless extensions afconvert cannot decode.
+// These go straight through ffmpeg decode to WAV before afconvert.
+var afconvertExoticExt = map[string]bool{
+	".ape": true,
+	".wv":  true,
+	".tta": true,
+}
 
 // convertToAAC uses afconvert to encode a lossless file to high-quality AAC (macOS)
 func convertToAAC(src, dst string, preserveArt bool) error {
@@ -16,12 +26,33 @@ func convertToAAC(src, dst string, preserveArt bool) error {
 		return err
 	}
 
+	encodeSrc := src
+	if afconvertExoticExt[strings.ToLower(filepath.Ext(src))] {
+		tmpWav := dst + ".src.wav"
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		dec := exec.CommandContext(ctx, "ffmpeg",
+			"-y", "-v", "error",
+			"-i", src,
+			"-map", "0:a",
+			"-c:a", "pcm_s16le",
+			tmpWav,
+		)
+		decErr := dec.Run()
+		cancel()
+		if decErr != nil {
+			_ = os.Remove(tmpWav)
+			return decErr
+		}
+		encodeSrc = tmpWav
+		defer os.Remove(tmpWav)
+	}
+
 	cmd := exec.Command(
 		"/usr/bin/afconvert",
 		"-f", "m4af",
 		"-d", "aac",
 		"-b", "256000",
-		src,
+		encodeSrc,
 		dst,
 	)
 	cmd.Stdout = nil
