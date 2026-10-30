@@ -21,6 +21,9 @@ var (
 	losslessExt = map[string]bool{
 		".flac": true,
 		".alac": true,
+		".wav":  true,
+		".aif":  true,
+		".aiff": true,
 	}
 
 	lossyExt = map[string]bool{
