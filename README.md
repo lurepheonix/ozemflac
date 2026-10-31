@@ -12,10 +12,20 @@ Converted files keep the source metadata and original base name with the preset 
 
 ## Prerequisites
 
-- Go 1.25.5 (`go.mod`)
+- Go 1.27.3 (`go.mod`)
 - `ffmpeg` and `ffprobe` in `$PATH` (always required; `convert`/`sync` fail fast if missing)
 - Linux: `ffmpeg` built with `--enable-libfdk-aac` (`libfdk_aac`) for AAC and `--enable-libmp3lame` (`libmp3lame`) for MP3. Checked via `ffmpeg -encoders` at runtime.
 - macOS: `/usr/bin/afconvert` (Xcode Command Line Tools) for AAC, `ffmpeg` with `libmp3lame` for MP3; AAC metadata copy still uses `ffmpeg`.
+
+## Git hooks
+
+Versioned hooks live in `.githooks/`. Enable once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+`pre-commit` runs `gofmt -l .`, `go vet ./...`, and `go build ./...`, failing on unformatted files. Bypass with `git commit --no-verify`.
 
 ## Commands
 

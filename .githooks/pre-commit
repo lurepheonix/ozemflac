@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pre-commit hook: fail fast on unformatted code, vet issues, or build breaks.
+# Bypass with: git commit --no-verify
+set -eu
+
+UNFORMATTED="$(gofmt -l .)"
+if [ -n "$UNFORMATTED" ]; then
+  echo "pre-commit: unformatted files (run gofmt -w):" >&2
+  echo "$UNFORMATTED" >&2
+  exit 1
+fi
+
+go vet ./...
+go build ./...
