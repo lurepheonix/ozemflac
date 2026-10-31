@@ -364,11 +364,7 @@ func runSync(args []string) {
 				mu.Lock()
 				processed++
 				if !*jsonOut {
-					percent := float64(processed) / float64(total) * 100
-					barLen := 40
-					filled := int(percent / 100 * float64(barLen))
-					bar := strings.Repeat("█", filled) + strings.Repeat("-", barLen-filled)
-					fmt.Printf("\r[%s] %.1f%%  %s", bar, percent, name)
+					fmt.Print(formatProgress(processed, total, name))
 				}
 				mu.Unlock()
 			}
