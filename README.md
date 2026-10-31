@@ -27,6 +27,16 @@ git config core.hooksPath .githooks
 
 `pre-commit` runs `gofmt -l .`, `go vet ./...`, and `go build ./...`, failing on unformatted files. Bypass with `git commit --no-verify`.
 
+## Versioning
+
+`ozemflac --version` (aliases: `-V`, `version`) prints the release tag, or VCS revision/time stamped by the Go toolchain for untagged builds (`dev (...)`), or `dev` when no VCS info is available.
+
+Releases use SemVer git tags (`v0.1.0`, `v0.2.0`, …). To bake the tag into the binary:
+
+```
+go build -ldflags "-X main.version=v0.1.0" .
+```
+
 ## Commands
 
 ### `ozemflac convert` (default)

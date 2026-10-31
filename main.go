@@ -130,6 +130,11 @@ func main() {
 		printTopError()
 		os.Exit(1)
 	}
+	// Version: ozemflac --version, ozemflac -V, ozemflac version
+	if os.Args[1] == "--version" || os.Args[1] == "-V" || os.Args[1] == "version" {
+		printVersion()
+		return
+	}
 	// Explicit convert alias: ozemflac convert ... behaves like bare convert.
 	isConvertAlias := len(os.Args) > 1 && os.Args[1] == "convert"
 	if isConvertAlias {
