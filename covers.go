@@ -328,7 +328,7 @@ func printCoversJSON(srcRoot string, results []coverDirResult, showAll bool) {
 	}
 	out := struct {
 		Source   string         `json:"source"`
-		Missing  []jsonMissing `json:"missing,omitempty"`
+		Missing  []jsonMissing  `json:"missing,omitempty"`
 		PerTrack []jsonPerTrack `json:"perTrack,omitempty"`
 		OK       []jsonOK       `json:"ok,omitempty"`
 	}{
