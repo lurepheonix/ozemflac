@@ -37,6 +37,8 @@ Releases use SemVer git tags (`v0.1.0`, `v0.2.0`, …). To bake the tag into the
 go build -ldflags "-X main.version=v0.1.0" .
 ```
 
+Pushing a tag (`git push origin v0.1.0`) triggers the `release` workflow, which publishes a GitHub Release with binaries for linux/darwin/windows × amd64/arm64 (GoReleaser). Released binaries still need their runtime encoders: `ffmpeg` in `PATH` everywhere (Windows: any build with the native `aac` encoder; Linux: `libfdk_aac` + `libmp3lame`); macOS additionally uses `/usr/bin/afconvert` for AAC.
+
 ## Commands
 
 ### `ozemflac convert` (default)
